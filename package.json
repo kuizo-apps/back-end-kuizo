@@ -1,0 +1,25 @@
+{
+  "name": "backend-kuizo",
+  "version": "1.0.0",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "start-dev": "nodemon src/server.js",
+    "test": "lab -v -m 100000"
+  },
+  "keywords": [],
+  "author": "ilham",
+  "license": "ISC",
+  "description": "backend for kuizo apps",
+  "dependencies": {
+    "@hapi/hapi": "^21.4.3",
+    "@hapi/inert": "^7.1.0",
+    "@supabase/supabase-js": "^2.74.0",
+    "dotenv": "^17.2.3",
+    "hapi-auth-jwt2": "^11.0.0",
+    "joi": "^18.0.1",
+    "jsonwebtoken": "^9.0.2",
+    "nodemon": "^3.1.10"
+  }
+}
