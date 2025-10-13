@@ -7,8 +7,22 @@ import TokenManager from "./tokenize/TokenManager.js";
 import ClientError from "./exceptions/ClientError.js";
 
 // import service plugins
+
+// auth
 import auth from "./api/auth-plugin/index.js";
 import AuthService from "./services/supabase/AuthService.js";
+
+// question
+import question from "./api/question-plugin/index.js";
+import QuestionService from "./services/supabase/QuestionService.js";
+
+// room
+import room from "./api/room-plugin/index.js";
+import RoomService from "./services/supabase/RoomService.js";
+
+// exam
+import exam from "./api/exam-plugin/index.js";
+import ExamService from "./services/supabase/ExamService.js";
 
 dotenv.config();
 
@@ -25,6 +39,9 @@ export const init = async () => {
 
   // inisiasi service plugins
   const authService = new AuthService();
+  const questionService = new QuestionService();
+  const roomService = new RoomService();
+  const examService = new ExamService();
 
   await server.register(HapiAuthJwt2);
 
@@ -41,7 +58,7 @@ export const init = async () => {
         return {
           isValid: true,
           credentials: { ...decoded, scope: decoded.role },
-        }; 
+        };
       } catch (error) {
         return { isValid: false };
       }
@@ -49,10 +66,39 @@ export const init = async () => {
   });
 
   // register service plugins
+
+  // auth
   await server.register({
     plugin: auth,
     options: {
       service: authService,
+      tokenManager: TokenManager,
+    },
+  });
+
+  // question
+  await server.register({
+    plugin: question,
+    options: {
+      service: questionService,
+      tokenManager: TokenManager,
+    },
+  });
+
+  // room
+  await server.register({
+    plugin: room,
+    options: {
+      service: roomService,
+      tokenManager: TokenManager,
+    },
+  });
+
+  // exam
+  await server.register({
+    plugin: exam,
+    options: {
+      service: examService,
       tokenManager: TokenManager,
     },
   });
