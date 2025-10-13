@@ -107,19 +107,23 @@ export default class ExamService {
   }
 
   _weightsForVariableLength(question_count) {
-    const w1 = 100 / question_count;
-    const w2 = w1 + 0.5;
-    const w3 = w2 + 0.5;
+    const base = 100 / question_count;
+    const delta = base * 0.2; // bobot kenaikan tiap level
+    const w1 = base;
+    const w2 = w1 + delta;
+    const w3 = w2 + delta;
     return { w1, w2, w3 };
   }
 
   async _progressAdaptive(student_id, room_id) {
+    // hitung level berdasarkan pola 2 benar / 2 salah beruntun
     const { data, error } = await this._supabase
       .from("student_answers")
       .select("is_correct, question_level_at_attempt")
       .eq("student_id", student_id)
       .eq("room_id", room_id)
       .order("answered_at", { ascending: true });
+
     if (error)
       throw new InvariantError(
         "Gagal membaca progres adaptif: " + error.message
@@ -131,21 +135,21 @@ export default class ExamService {
 
     for (const row of data ?? []) {
       const correct = row.is_correct;
+
       if (correct) {
-        streakCorrect += 1;
+        streakCorrect++;
         streakWrong = 0;
+        if (streakCorrect === 2 && level < 3) {
+          level++;
+          streakCorrect = 0;
+        }
       } else {
-        streakWrong += 1;
+        streakWrong++;
         streakCorrect = 0;
-      }
-      if (streakCorrect >= 2 && level < 3) {
-        level += 1;
-        streakCorrect = 0;
-        streakWrong = 0;
-      } else if (streakWrong >= 2 && level > 1) {
-        level -= 1;
-        streakCorrect = 0;
-        streakWrong = 0;
+        if (streakWrong === 2 && level > 1) {
+          level--;
+          streakWrong = 0;
+        }
       }
     }
 
@@ -328,10 +332,7 @@ export default class ExamService {
     /* ==== Mekanisme Adaptive Fixed Length ==== */
     if (room.assessment_mechanism === "adaptive_fixed_length") {
       const prog = await this._progressAdaptive(student_id, room_id);
-      let nextLevel = prog.current_level;
-      const lastTwo = await this._lastTwo(student_id, room_id);
-      if (lastTwo === "CC" && nextLevel < 3) nextLevel += 1;
-      if (lastTwo === "WW" && nextLevel > 1) nextLevel -= 1;
+      const nextLevel = prog.current_level; // gunakan level dari progres adaptif saja
 
       const answeredCount = answeredIds.length;
       if (answeredCount >= room.question_count)
@@ -370,10 +371,7 @@ export default class ExamService {
       if ((scores.expectation_score ?? 0) >= 100) return { done: true, scores };
 
       const prog = await this._progressAdaptive(student_id, room_id);
-      let nextLevel = prog.current_level;
-      const lastTwo = await this._lastTwo(student_id, room_id);
-      if (lastTwo === "CC" && nextLevel < 3) nextLevel += 1;
-      if (lastTwo === "WW" && nextLevel > 1) nextLevel -= 1;
+      const nextLevel = prog.current_level;
 
       const nextQ = await this._getRandomQuestionByLevel(
         nextLevel,
@@ -386,24 +384,37 @@ export default class ExamService {
     throw new InvariantError("Mekanisme ujian tidak dikenali");
   }
 
-  async _lastTwo(student_id, room_id) {
-    const { data, error } = await this._supabase
-      .from("student_answers")
-      .select("is_correct")
-      .eq("student_id", student_id)
-      .eq("room_id", room_id)
-      .order("answered_at", { ascending: false })
-      .limit(2);
-    if (error)
-      throw new InvariantError("Gagal membaca streak: " + error.message);
-    if (!data || data.length < 2) return "";
-    return (data[0].is_correct ? "C" : "W") + (data[1].is_correct ? "C" : "W");
-  }
-
   async finish(student_id, { room_id }) {
     const room = await this._getRoom(room_id);
     await this._ensureStudentInRoom(student_id, room_id);
-    return this._computeScores(student_id, room, room.assessment_mechanism);
+
+    const scores = await this._computeScores(
+      student_id,
+      room,
+      room.assessment_mechanism
+    );
+
+    // simpan hasil akhir ke room_participants
+    const { error: updateErr } = await this._supabase
+      .from("room_participants")
+      .update({
+        total_questions_answered: scores.total_questions_answered,
+        total_correct: scores.total_correct,
+        true_score: scores.true_score,
+        expectation_score: scores.expectation_score,
+        total_time_seconds: scores.total_time_seconds,
+        avg_time_per_question: scores.avg_time_per_question,
+        finished_at: new Date().toISOString(),
+      })
+      .eq("room_id", room_id)
+      .eq("student_id", student_id);
+
+    if (updateErr)
+      throw new InvariantError(
+        "Gagal menyimpan hasil ujian ke room_participants: " + updateErr.message
+      );
+
+    return scores;
   }
 
   async result(student_id, room_id) {
