@@ -108,7 +108,7 @@ export default class ExamService {
 
   _weightsForVariableLength(question_count) {
     const base = 100 / question_count;
-    const delta = base * 0.2; // bobot kenaikan tiap level
+    const delta = base * 0.2;
     const w1 = base;
     const w2 = w1 + delta;
     const w3 = w2 + delta;
@@ -116,7 +116,6 @@ export default class ExamService {
   }
 
   async _progressAdaptive(student_id, room_id) {
-    // hitung level berdasarkan pola 2 benar / 2 salah beruntun
     const { data, error } = await this._supabase
       .from("student_answers")
       .select("is_correct, question_level_at_attempt")
@@ -228,7 +227,9 @@ export default class ExamService {
       const remaining = preset.filter((q) => !answeredIds.includes(q.id));
       if (!remaining.length)
         return { done: true, message: "Tidak ada soal tersisa" };
-      nextQ = remaining[0];
+      const shuffled = remaining.sort(() => Math.random() - 0.5);
+      nextQ = shuffled[0];
+      return { done: false, question: this._exposeQuestion(nextQ) };
     } else if (room.assessment_mechanism === "random") {
       const picks = await this._getRandomQuestions(1, answeredIds);
       if (!picks.length)
@@ -257,12 +258,9 @@ export default class ExamService {
       throw new InvariantError("Room belum memulai ujian");
     await this._ensureStudentInRoom(student_id, room_id);
 
-    // ambil soal + snapshot level
     const { data: q, error: qErr } = await this._supabase
       .from("questions")
-      .select(
-        "id, correct_answer, difficulty_level, question_text, image_url, option_a, option_b, option_c, option_d, option_e"
-      )
+      .select("id, correct_answer, difficulty_level")
       .eq("id", question_id)
       .maybeSingle();
     if (qErr) throw new InvariantError("Gagal mengambil soal: " + qErr.message);
@@ -270,7 +268,6 @@ export default class ExamService {
 
     const is_correct = this._calcCorrect(q.correct_answer, answer);
 
-    // simpan jawaban + level snapshot
     const insertRow = {
       student_id,
       room_id,
@@ -287,77 +284,47 @@ export default class ExamService {
       throw new InvariantError("Gagal menyimpan jawaban: " + insErr.message);
 
     const answeredIds = await this._getAnsweredQuestionIds(student_id, room_id);
+    const answeredCount = answeredIds.length;
+
+    // helper untuk finalize otomatis
+    const finalize = async () => {
+      const scores = await this._computeScores(
+        student_id,
+        room,
+        room.assessment_mechanism
+      );
+      await this.finish(student_id, { room_id });
+      return { done: true, scores };
+    };
 
     /* ==== Mekanisme Static ==== */
     if (room.assessment_mechanism === "static") {
       const preset = await this._getStaticRoomSet(room_id);
       const remaining = preset.filter((qq) => !answeredIds.includes(qq.id));
-      if (remaining.length === 0)
-        return {
-          done: true,
-          scores: await this._computeScores(
-            student_id,
-            room,
-            room.assessment_mechanism
-          ),
-        };
-      return { done: false, question: this._exposeQuestion(remaining[0]) };
+      if (remaining.length === 0) return await finalize();
+      const shuffled = remaining.sort(() => Math.random() - 0.5);
+      return { done: false, question: this._exposeQuestion(shuffled[0]) };
     }
 
     /* ==== Mekanisme Random ==== */
     if (room.assessment_mechanism === "random") {
-      const answeredCount = answeredIds.length;
-      if (answeredCount >= room.question_count)
-        return {
-          done: true,
-          scores: await this._computeScores(
-            student_id,
-            room,
-            room.assessment_mechanism
-          ),
-        };
+      if (answeredCount >= room.question_count) return await finalize();
       const picks = await this._getRandomQuestions(1, answeredIds);
-      if (!picks.length)
-        return {
-          done: true,
-          scores: await this._computeScores(
-            student_id,
-            room,
-            room.assessment_mechanism
-          ),
-        };
+      if (!picks.length) return await finalize();
       return { done: false, question: this._exposeQuestion(picks[0]) };
     }
 
     /* ==== Mekanisme Adaptive Fixed Length ==== */
     if (room.assessment_mechanism === "adaptive_fixed_length") {
       const prog = await this._progressAdaptive(student_id, room_id);
-      const nextLevel = prog.current_level; // gunakan level dari progres adaptif saja
-
-      const answeredCount = answeredIds.length;
-      if (answeredCount >= room.question_count)
-        return {
-          done: true,
-          scores: await this._computeScores(
-            student_id,
-            room,
-            room.assessment_mechanism
-          ),
-        };
+      const nextLevel = prog.current_level;
+      if (answeredCount >= room.question_count) return await finalize();
 
       const nextQ = await this._getRandomQuestionByLevel(
         nextLevel,
         answeredIds
       );
-      if (!nextQ)
-        return {
-          done: true,
-          scores: await this._computeScores(
-            student_id,
-            room,
-            room.assessment_mechanism
-          ),
-        };
+      if (!nextQ) return await finalize();
       return { done: false, question: this._exposeQuestion(nextQ) };
     }
 
@@ -368,16 +335,14 @@ export default class ExamService {
         room,
         room.assessment_mechanism
       );
-      if ((scores.expectation_score ?? 0) >= 100) return { done: true, scores };
+      if ((scores.expectation_score ?? 0) >= 100) return await finalize();
 
       const prog = await this._progressAdaptive(student_id, room_id);
-      const nextLevel = prog.current_level;
-
       const nextQ = await this._getRandomQuestionByLevel(
-        nextLevel,
+        prog.current_level,
         answeredIds
       );
-      if (!nextQ) return { done: true, scores };
+      if (!nextQ) return await finalize();
       return { done: false, question: this._exposeQuestion(nextQ) };
     }
 
@@ -394,8 +359,7 @@ export default class ExamService {
       room.assessment_mechanism
     );
 
-    // simpan hasil akhir ke room_participants
-    const { error: updateErr } = await this._supabase
+    const { data, error: updateErr } = await this._supabase
       .from("room_participants")
       .update({
         total_questions_answered: scores.total_questions_answered,
@@ -407,7 +371,8 @@ export default class ExamService {
         finished_at: new Date().toISOString(),
       })
       .eq("room_id", room_id)
-      .eq("student_id", student_id);
+      .eq("student_id", student_id)
+      .select();  
 
     if (updateErr)
       throw new InvariantError(

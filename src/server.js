@@ -24,6 +24,10 @@ import RoomService from "./services/supabase/RoomService.js";
 import exam from "./api/exam-plugin/index.js";
 import ExamService from "./services/supabase/ExamService.js";
 
+// result
+import result from "./api/result-plugin/index.js";
+import ResultService from "./services/supabase/ResultService.js";
+
 dotenv.config();
 
 export const init = async () => {
@@ -42,6 +46,7 @@ export const init = async () => {
   const questionService = new QuestionService();
   const roomService = new RoomService();
   const examService = new ExamService();
+  const resultService = new ResultService();
 
   await server.register(HapiAuthJwt2);
 
@@ -99,6 +104,15 @@ export const init = async () => {
     plugin: exam,
     options: {
       service: examService,
+      tokenManager: TokenManager,
+    },
+  });
+
+  // result
+  await server.register({
+    plugin: result,
+    options: {
+      service: resultService,
       tokenManager: TokenManager,
     },
   });
