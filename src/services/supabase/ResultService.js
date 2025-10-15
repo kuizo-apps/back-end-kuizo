@@ -112,12 +112,14 @@ export default class ResultService {
       .from("student_answers")
       .select(
         `
-        id, student_answer, is_correct, time_taken_seconds, question_level_at_attempt,
-        questions (
-          question_text, correct_answer, difficulty_level,
-          topics (name)
-        )
-      `
+          id, student_answer, is_correct, time_taken_seconds, question_level_at_attempt,
+          questions (
+            question_text,
+            option_a, option_b, option_c, option_d, option_e,
+            correct_answer, difficulty_level,
+            topics (name)
+          )
+        `
       )
       .eq("student_id", student_id)
       .eq("room_id", room_id)
@@ -177,6 +179,13 @@ export default class ResultService {
       history: (answers ?? []).map((a) => ({
         question: a.questions.question_text,
         topic: a.questions.topics?.name,
+        options: {
+          A: a.questions.option_a,
+          B: a.questions.option_b,
+          C: a.questions.option_c,
+          D: a.questions.option_d,
+          E: a.questions.option_e,
+        },
         correct_answer: a.questions.correct_answer,
         student_answer: a.student_answer,
         is_correct: a.is_correct,
