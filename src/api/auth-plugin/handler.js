@@ -46,6 +46,7 @@ export default class AuthHandler {
       data: {
         accessToken,
         role: profile.role,
+        name: profile.full_name,
       },
     };
   }
