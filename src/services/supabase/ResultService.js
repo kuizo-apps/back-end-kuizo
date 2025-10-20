@@ -95,6 +95,7 @@ export default class ResultService {
         total_time_seconds,
         avg_time_per_question,
         finished_at,
+        rooms (assessment_mechanism),
         profiles (username, full_name, nomer_induk, email)
       `
       )
@@ -175,6 +176,11 @@ export default class ResultService {
         username: participant.profiles?.username,
         nomer_induk: participant.profiles?.nomer_induk,
         email: participant.profiles?.email,
+      },
+      room_info: {
+        room_id,
+        assessment_mechanism:
+          participant.rooms?.assessment_mechanism ?? "Tidak Diketahui",
       },
       history: (answers ?? []).map((a) => ({
         question: a.questions.question_text,

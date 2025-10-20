@@ -211,7 +211,7 @@ export default class RoomService {
     const { data, error } = await this._supabase
       .from("room_participants")
       .select(
-        "room_id, rooms:room_id(id, name, keypass, status, assessment_mechanism, question_count, created_at)"
+        "room_id, join_timestamp, rooms:room_id(id, name, keypass, status, assessment_mechanism, question_count, created_at)"
       )
       .eq("student_id", studentId)
       .order("join_timestamp", { ascending: false });
