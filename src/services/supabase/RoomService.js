@@ -221,7 +221,10 @@ export default class RoomService {
         "Gagal mengambil daftar room saya: " + error.message
       );
     // Flatten
-    return (data ?? []).map((d) => d.rooms);
+    return (data ?? []).map((d) => ({
+      ...d.rooms,
+      join_timestamp: d.join_timestamp,
+    }));
   }
 
   /* ============== STATIC ROOM QUESTION SETUP ============== */
