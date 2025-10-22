@@ -4,7 +4,8 @@ export default class RoomHandler {
 
     // guru/admin
     this.postCreateRoomHandler = this.postCreateRoomHandler.bind(this);
-    this.generateStaticQuestionsHandler = this.generateStaticQuestionsHandler.bind(this);
+    this.generateStaticQuestionsHandler =
+      this.generateStaticQuestionsHandler.bind(this);
     this.getMyRoomsHandler = this.getMyRoomsHandler.bind(this);
     this.getRoomDetailHandler = this.getRoomDetailHandler.bind(this);
     this.patchRoomStatusHandler = this.patchRoomStatusHandler.bind(this);
@@ -15,6 +16,7 @@ export default class RoomHandler {
     this.postJoinRoomHandler = this.postJoinRoomHandler.bind(this);
     this.deleteLeaveRoomHandler = this.deleteLeaveRoomHandler.bind(this);
     this.getStudentRoomsHandler = this.getStudentRoomsHandler.bind(this);
+    this.getRoomParticipantsForStudentHandler = this.getRoomParticipantsForStudentHandler.bind(this);
   }
 
   /* ====== GURU/ADMIN ====== */
@@ -99,6 +101,16 @@ export default class RoomHandler {
         data,
       })
       .code(201);
+  }
+
+  async getRoomParticipantsForStudentHandler(request) {
+    const { id: studentId } = request.auth.credentials;
+    const { room_id } = request.params;
+    const data = await this._service.listParticipantsByRoomForStudent(
+      room_id,
+      studentId
+    );
+    return { status: "success", data };
   }
 
   async deleteLeaveRoomHandler(request) {

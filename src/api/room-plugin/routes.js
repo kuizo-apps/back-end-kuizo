@@ -89,6 +89,16 @@ const routes = (handler) => [
     },
   },
   {
+    method: "GET",
+    path: "/rooms/{room_id}/participants",
+    handler: handler.getRoomParticipantsForStudentHandler,
+    options: {
+      auth: { strategy: "jwt", scope: ["siswa"] },
+      tags: ["api", "rooms"],
+      description: "Lihat daftar peserta di room yang sama (siswa)",
+    },
+  },
+  {
     method: "DELETE",
     path: "/rooms/leave/{room_id}",
     handler: handler.deleteLeaveRoomHandler,

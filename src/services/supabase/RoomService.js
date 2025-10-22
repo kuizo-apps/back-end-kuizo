@@ -196,6 +196,55 @@ export default class RoomService {
     return { room_id: room.id };
   }
 
+  async listParticipantsByRoomForStudent(roomId, studentId) {
+    // pastikan room ada
+    const { data: room, error: rErr } = await this._supabase
+      .from("rooms")
+      .select("id, name, status")
+      .eq("id", roomId)
+      .maybeSingle();
+
+    if (rErr) throw new InvariantError("Gagal memeriksa room: " + rErr.message);
+    if (!room) throw new NotFoundError("Room tidak ditemukan");
+
+    // pastikan siswa benar-benar tergabung di room tsb
+    const { data: joined, error: jErr } = await this._supabase
+      .from("room_participants")
+      .select("room_id")
+      .eq("room_id", roomId)
+      .eq("student_id", studentId)
+      .maybeSingle();
+
+    if (jErr)
+      throw new InvariantError("Gagal memeriksa partisipasi: " + jErr.message);
+    if (!joined) throw new InvariantError("Anda belum tergabung di room ini");
+
+    // ambil daftar peserta di room
+    const { data: participants, error: pErr } = await this._supabase
+      .from("room_participants")
+      .select(
+        "student_id, join_timestamp, profiles:student_id(id, username, full_name, nomer_induk)"
+      )
+      .eq("room_id", roomId)
+      .order("join_timestamp", { ascending: true });
+
+    if (pErr)
+      throw new InvariantError(
+        "Gagal mengambil daftar peserta: " + pErr.message
+      );
+
+    return {
+      room,
+      participants: participants.map((p) => ({
+        id: p.profiles.id,
+        username: p.profiles.username,
+        full_name: p.profiles.full_name,
+        nomer_induk: p.profiles.nomer_induk,
+        join_timestamp: p.join_timestamp,
+      })),
+    };
+  }
+
   async leaveRoom(roomId, studentId) {
     const { error } = await this._supabase
       .from("room_participants")
