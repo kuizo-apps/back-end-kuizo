@@ -197,17 +197,19 @@ export default class RoomService {
   }
 
   async listParticipantsByRoomForStudent(roomId, studentId) {
-    // pastikan room ada
+    // Pastikan room ada + ambil detailnya
     const { data: room, error: rErr } = await this._supabase
       .from("rooms")
-      .select("id, name, status")
+      .select(
+        "id, name, keypass, status, assessment_mechanism, question_count, created_at"
+      )
       .eq("id", roomId)
       .maybeSingle();
 
     if (rErr) throw new InvariantError("Gagal memeriksa room: " + rErr.message);
     if (!room) throw new NotFoundError("Room tidak ditemukan");
 
-    // pastikan siswa benar-benar tergabung di room tsb
+    // Pastikan siswa benar-benar tergabung di room tsb
     const { data: joined, error: jErr } = await this._supabase
       .from("room_participants")
       .select("room_id")
@@ -219,7 +221,7 @@ export default class RoomService {
       throw new InvariantError("Gagal memeriksa partisipasi: " + jErr.message);
     if (!joined) throw new InvariantError("Anda belum tergabung di room ini");
 
-    // ambil daftar peserta di room
+    // Ambil daftar peserta di room
     const { data: participants, error: pErr } = await this._supabase
       .from("room_participants")
       .select(
@@ -233,8 +235,21 @@ export default class RoomService {
         "Gagal mengambil daftar peserta: " + pErr.message
       );
 
+    // Hitung total siswa
+    const total_participants = participants?.length ?? 0;
+
+    // Susun respons akhir
     return {
-      room,
+      room: {
+        id: room.id,
+        name: room.name,
+        keypass: room.keypass,
+        status: room.status,
+        assessment_mechanism: room.assessment_mechanism,
+        question_count: room.question_count,
+        created_at: room.created_at,
+        total_participants,
+      },
       participants: participants.map((p) => ({
         id: p.profiles.id,
         username: p.profiles.username,
