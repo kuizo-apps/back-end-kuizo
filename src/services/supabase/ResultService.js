@@ -95,7 +95,7 @@ export default class ResultService {
         total_time_seconds,
         avg_time_per_question,
         finished_at,
-        rooms (assessment_mechanism),
+        rooms (name, assessment_mechanism),
         profiles (username, full_name, nomer_induk, email)
       `
       )
@@ -179,9 +179,11 @@ export default class ResultService {
       },
       room_info: {
         room_id,
+        room_name: participant.rooms?.name ?? "Tanpa Nama Room",
         assessment_mechanism:
           participant.rooms?.assessment_mechanism ?? "Tidak Diketahui",
       },
+
       history: (answers ?? []).map((a) => ({
         question: a.questions.question_text,
         topic: a.questions.topics?.name,
