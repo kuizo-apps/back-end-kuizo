@@ -10,80 +10,85 @@ export default class ResultService {
     );
   }
 
-  /**
-   * Mendapatkan laporan hasil ujian
-   * @param {string} student_id - UUID siswa yang diminta
-   * @param {number} room_id - ID room ujian
-   * @param {string} viewer_role - "siswa" | "guru" | "admin"
-   */
-  async getStudentReport(student_id, room_id, viewer_role = "siswa") {
-    // Jika guru/admin → ambil semua peserta di room
-    if (viewer_role === "guru" || viewer_role === "admin") {
-      const { data: participants, error: pErr } = await this._supabase
-        .from("room_participants")
-        .select("student_id")
-        .eq("room_id", room_id);
-
-      if (pErr)
-        throw new InvariantError(
-          "Gagal mengambil daftar peserta: " + pErr.message
-        );
-      if (!participants || participants.length === 0)
-        throw new NotFoundError("Belum ada siswa dalam room ini.");
-
-      // Ambil laporan tiap siswa paralel
-      const reports = [];
-      for (const p of participants) {
-        const report = await this._getSingleStudentReport(
-          p.student_id,
-          room_id
-        );
-        reports.push({ student_id: p.student_id, ...report });
-      }
-
-      // Hitung rata-rata kelas
-      const avg = {
-        total_questions: 0,
-        total_correct: 0,
-        true_score: 0,
-        expectation_score: 0,
-        total_time_seconds: 0,
-        avg_time_per_question: 0,
-      };
-      for (const r of reports) {
-        avg.total_questions += r.summary.total_questions ?? 0;
-        avg.total_correct += r.summary.total_correct ?? 0;
-        avg.true_score += r.summary.true_score ?? 0;
-        avg.expectation_score += r.summary.expectation_score ?? 0;
-        avg.total_time_seconds += r.summary.total_time_seconds ?? 0;
-        avg.avg_time_per_question += r.summary.avg_time_per_question ?? 0;
-      }
-
-      const count = reports.length || 1;
-      const classSummary = {
-        avg_total_questions: (avg.total_questions / count).toFixed(2),
-        avg_total_correct: (avg.total_correct / count).toFixed(2),
-        avg_true_score: (avg.true_score / count).toFixed(2),
-        avg_expectation_score: (avg.expectation_score / count).toFixed(2),
-        avg_total_time_seconds: (avg.total_time_seconds / count).toFixed(2),
-        avg_time_per_question: (avg.avg_time_per_question / count).toFixed(2),
-      };
-
-      return {
-        summary: classSummary,
-        students: reports,
-      };
-    }
-
-    // Jika bukan guru/admin → default per siswa
+  /** =====================================================================
+   * [A] Untuk siswa: laporan hasil ujian pribadi
+   * ===================================================================== */
+  async getStudentReport(student_id, room_id) {
     return this._getSingleStudentReport(student_id, room_id);
   }
 
-  /**
-   * Mengambil laporan lengkap satu siswa di room tertentu
-   */
+  /** =====================================================================
+   * [B] Untuk guru/admin: rekap keseluruhan kelas dalam 1 room
+   * ===================================================================== */
+  async getRoomSummaryForTeacher(room_id) {
+    const { data: participants, error: pErr } = await this._supabase
+      .from("room_participants")
+      .select("student_id")
+      .eq("room_id", room_id);
+
+    if (pErr)
+      throw new InvariantError("Gagal mengambil peserta: " + pErr.message);
+    if (!participants?.length)
+      throw new NotFoundError("Belum ada siswa di room ini.");
+
+    // Ambil laporan setiap siswa
+    const reports = await Promise.all(
+      participants.map(async (p) => {
+        const r = await this._getSingleStudentReport(p.student_id, room_id);
+        return {
+          student_id: r.identity.student_id,
+          nama: r.identity.nama,
+          nomer_induk: r.identity.nomer_induk,
+          total_correct: r.summary.total_correct,
+          total_questions: r.summary.total_questions,
+          true_score: r.summary.true_score,
+          expectation_score: r.summary.expectation_score,
+          total_time_seconds: r.summary.total_time_seconds,
+          avg_time_per_question: r.summary.avg_time_per_question,
+        };
+      })
+    );
+
+    // Hitung rata-rata keseluruhan kelas
+    const n = reports.length;
+    const avg = {
+      total_questions: (
+        reports.reduce((a, b) => a + (b.total_questions ?? 0), 0) / n
+      ).toFixed(2),
+      total_correct: (
+        reports.reduce((a, b) => a + (b.total_correct ?? 0), 0) / n
+      ).toFixed(2),
+      true_score: (
+        reports.reduce((a, b) => a + (b.true_score ?? 0), 0) / n
+      ).toFixed(2),
+      expectation_score: (
+        reports.reduce((a, b) => a + (b.expectation_score ?? 0), 0) / n
+      ).toFixed(2),
+      total_time_seconds: (
+        reports.reduce((a, b) => a + (b.total_time_seconds ?? 0), 0) / n
+      ).toFixed(2),
+      avg_time_per_question: (
+        reports.reduce((a, b) => a + (b.avg_time_per_question ?? 0), 0) / n
+      ).toFixed(2),
+    };
+
+    return {
+      room_summary: avg,
+      participants: reports,
+    };
+  }
+
+  /** =====================================================================
+   * [C] Untuk guru/admin: detail satu siswa di room
+   * ===================================================================== */
+  async getStudentDetailForTeacher(student_id, room_id) {
+    return this._getSingleStudentReport(student_id, room_id);
+  }
+
+  /** =====================================================================
+   * [PRIVATE] Fungsi mengambil laporan lengkap satu siswa
+   * ===================================================================== */
   async _getSingleStudentReport(student_id, room_id) {
-    // === Ambil data peserta ===
     const { data: participant, error: pErr } = await this._supabase
       .from("room_participants")
       .select(
@@ -106,21 +111,21 @@ export default class ResultService {
     if (pErr)
       throw new InvariantError("Gagal mengambil data peserta: " + pErr.message);
     if (!participant)
-      throw new NotFoundError("Siswa tidak mengikuti ujian ini");
+      throw new NotFoundError("Siswa tidak mengikuti ujian ini.");
 
-    // === Ambil riwayat jawaban ===
+    // Ambil riwayat jawaban siswa
     const { data: answers, error: aErr } = await this._supabase
       .from("student_answers")
       .select(
         `
-          id, student_answer, is_correct, time_taken_seconds, question_level_at_attempt,
-          questions (
-            question_text,
-            option_a, option_b, option_c, option_d, option_e,
-            correct_answer, difficulty_level,
-            topics (name)
-          )
-        `
+        id, student_answer, is_correct, time_taken_seconds, question_level_at_attempt,
+        questions (
+          question_text,
+          option_a, option_b, option_c, option_d, option_e,
+          correct_answer, difficulty_level,
+          topics (name)
+        )
+      `
       )
       .eq("student_id", student_id)
       .eq("room_id", room_id)
@@ -131,7 +136,7 @@ export default class ResultService {
         "Gagal mengambil riwayat jawaban: " + aErr.message
       );
 
-    // === Tiga soal terlama ===
+    // Soal terlama (3 soal)
     const longest = [...(answers ?? [])]
       .sort((a, b) => b.time_taken_seconds - a.time_taken_seconds)
       .slice(0, 3)
@@ -143,7 +148,7 @@ export default class ResultService {
         time: a.time_taken_seconds,
       }));
 
-    // === Rekap per level (berdasarkan level attempt) ===
+    // Rekap per level soal
     const levelSummary = {};
     for (const a of answers ?? []) {
       const lvl = a.question_level_at_attempt;
@@ -159,7 +164,6 @@ export default class ResultService {
       percent: ((s.correct / s.total) * 100).toFixed(2),
     }));
 
-    // === Return report siswa ===
     return {
       summary: {
         total_questions: participant.total_questions_answered,
@@ -183,7 +187,6 @@ export default class ResultService {
         assessment_mechanism:
           participant.rooms?.assessment_mechanism ?? "Tidak Diketahui",
       },
-
       history: (answers ?? []).map((a) => ({
         question: a.questions.question_text,
         topic: a.questions.topics?.name,
