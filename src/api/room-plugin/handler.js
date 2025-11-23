@@ -4,8 +4,6 @@ export default class RoomHandler {
 
     // guru/admin
     this.postCreateRoomHandler = this.postCreateRoomHandler.bind(this);
-    this.generateStaticQuestionsHandler =
-      this.generateStaticQuestionsHandler.bind(this);
     this.getMyRoomsHandler = this.getMyRoomsHandler.bind(this);
     this.getRoomDetailHandler = this.getRoomDetailHandler.bind(this);
     this.patchRoomStatusHandler = this.patchRoomStatusHandler.bind(this);
@@ -28,22 +26,6 @@ export default class RoomHandler {
         status: "success",
         message: "Room berhasil dibuat",
         data: room,
-      })
-      .code(201);
-  }
-
-  async generateStaticQuestionsHandler(request, h) {
-    const { id: creatorId } = request.auth.credentials;
-    const { id: roomId } = request.params;
-    const result = await this._service.generateStaticQuestions(
-      roomId,
-      creatorId
-    );
-    return h
-      .response({
-        status: "success",
-        message: `Berhasil membuat set soal static (${result.total_inserted} soal)`,
-        data: result,
       })
       .code(201);
   }

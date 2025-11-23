@@ -22,15 +22,12 @@ export default class RoomService {
         () => chars[Math.floor(Math.random() * chars.length)]
       ).join("");
 
-      const { data, error } = await this._supabase
+      const { data } = await this._supabase
         .from("rooms")
         .select("id")
         .eq("keypass", keypass)
         .maybeSingle();
 
-      if (error) {
-        throw new InvariantError("Gagal memeriksa keypass: " + error.message);
-      }
       exists = !!data;
     }
     return keypass;
@@ -42,44 +39,109 @@ export default class RoomService {
       .select("id, created_by")
       .eq("id", roomId)
       .maybeSingle();
-    if (error)
-      throw new InvariantError(
-        "Gagal memeriksa pemilik room: " + error.message
-      );
+    if (error) throw new InvariantError("Gagal cek room: " + error.message);
     if (!data) throw new NotFoundError("Room tidak ditemukan");
     if (data.created_by !== ownerId)
       throw new InvariantError("Anda tidak memiliki akses ke room ini");
   }
 
-  /* ============== ROOMS (Guru/Admin) ============== */
-  async createRoom({ name, question_count, assessment_mechanism }, creatorId) {
+  /* ============== ROOMS CREATION & LOGIC ============== */
+
+  async _fetchQuestionsForRoom(subjectId, classLevel, topicIds, limit) {
+    let query = this._supabase
+      .from("questions")
+      .select("id, topic_id, topics!inner(id, subject_id, class_level)");
+
+    query = query
+      .eq("topics.subject_id", subjectId)
+      .eq("topics.class_level", classLevel);
+
+    if (topicIds && topicIds.length > 0) {
+      query = query.in("topic_id", topicIds);
+    }
+
+    const { data, error } = await query;
+
+    if (error)
+      throw new InvariantError("Gagal mengambil bank soal: " + error.message);
+
+    if (!data || data.length < limit) {
+      throw new InvariantError(
+        `Soal tidak cukup. Tersedia: ${
+          data?.length || 0
+        }, Diminta: ${limit}. Silakan kurangi jumlah soal atau tambah bank soal.`
+      );
+    }
+
+    const shuffled = data.sort(() => 0.5 - Math.random());
+    return shuffled.slice(0, limit);
+  }
+
+  async createRoom(payload, creatorId) {
+    const {
+      name,
+      question_count,
+      assessment_mechanism,
+      subject_id,
+      class_level,
+      topic_ids,
+    } = payload;
+
     const keypass = await this._generateKeypass();
-    const payload = {
+
+    const roomPayload = {
       name,
       keypass,
       status: "persiapan",
       assessment_mechanism,
       question_count,
       created_by: creatorId,
+      subject_id,  
+      class_level,  
+      topic_config: topic_ids && topic_ids.length > 0 ? topic_ids : null,  
     };
 
-    const { data, error } = await this._supabase
+    const { data: room, error } = await this._supabase
       .from("rooms")
-      .insert(payload)
-      .select(
-        "id, name, keypass, status, assessment_mechanism, question_count, created_by, created_at"
-      )
+      .insert(roomPayload)
+      .select()
       .single();
 
     if (error) throw new InvariantError("Gagal membuat room: " + error.message);
-    return data;
+
+    if (assessment_mechanism === "static") {
+      try {
+        const selectedQuestions = await this._fetchQuestionsForRoom(
+          subject_id,
+          class_level,
+          topic_ids,
+          question_count
+        );
+
+        const insertQuestions = selectedQuestions.map((q) => ({
+          room_id: room.id,
+          question_id: q.id,
+        }));
+
+        const { error: insertErr } = await this._supabase
+          .from("room_questions")
+          .insert(insertQuestions);
+
+        if (insertErr) throw insertErr;
+      } catch (e) {
+        await this._supabase.from("rooms").delete().eq("id", room.id);
+        throw new InvariantError("Gagal generate soal otomatis: " + e.message);
+      }
+    }
+
+    return room;
   }
 
   async listRoomsByCreator(creatorId, { q, status } = {}) {
     let query = this._supabase
       .from("rooms")
       .select(
-        "id, name, keypass, status, assessment_mechanism, question_count, created_at",
+        "id, name, keypass, status, assessment_mechanism, question_count, created_at, subject_id, class_level",
         { count: "exact" }
       )
       .eq("created_by", creatorId)
@@ -95,166 +157,121 @@ export default class RoomService {
   }
 
   async getRoomDetail(roomId, creatorId) {
-    // Batasi pada room milik creator
     const { data: room, error: rErr } = await this._supabase
       .from("rooms")
       .select(
-        "id, name, keypass, status, assessment_mechanism, question_count, created_by, created_at"
+        `id, name, keypass, status, assessment_mechanism, question_count, created_by, created_at, 
+          subject_id, class_level, topic_config, 
+          subjects(name)` 
       )
       .eq("id", roomId)
       .eq("created_by", creatorId)
       .maybeSingle();
 
-    if (rErr)
-      throw new InvariantError("Gagal mengambil detail room: " + rErr.message);
+    if (rErr) throw new InvariantError("Gagal detail room: " + rErr.message);
     if (!room) throw new NotFoundError("Room tidak ditemukan");
 
-    const { data: participants, error: pErr } = await this._supabase
+    const { count: participantCount, error: pErr } = await this._supabase
       .from("room_participants")
-      .select(
-        "student_id, join_timestamp, profiles:student_id(id, username, full_name, email, nomer_induk)"
-      )
-      .eq("room_id", roomId)
-      .order("join_timestamp", { ascending: true });
+      .select("*", { count: "exact", head: true })
+      .eq("room_id", roomId);
 
-    if (pErr)
-      throw new InvariantError("Gagal mengambil peserta room: " + pErr.message);
+    if (pErr) throw new InvariantError("Gagal hitung peserta: " + pErr.message);
 
-    return { ...room, participants };
+    let existingQuestions = 0;
+    if (room.assessment_mechanism === "static") {
+      const { count: qCount } = await this._supabase
+        .from("room_questions")
+        .select("*", { count: "exact", head: true })
+        .eq("room_id", roomId);
+      existingQuestions = qCount;
+    }
+
+    return {
+      ...room,
+      total_participants: participantCount,
+      total_questions_generated: existingQuestions,
+    };
   }
 
   async updateRoomStatus(roomId, status, creatorId) {
     await this._assertRoomOwnedBy(roomId, creatorId);
-
     const { data, error } = await this._supabase
       .from("rooms")
       .update({ status })
       .eq("id", roomId)
-      .select(
-        "id, name, keypass, status, assessment_mechanism, question_count, created_at"
-      )
+      .select()
       .maybeSingle();
-
     if (error)
-      throw new InvariantError(
-        "Gagal memperbarui status room: " + error.message
-      );
-    if (!data) throw new NotFoundError("Room tidak ditemukan");
+      throw new InvariantError("Gagal update status: " + error.message);
     return data;
   }
 
   async deleteRoom(roomId, creatorId) {
     await this._assertRoomOwnedBy(roomId, creatorId);
-
     const { error } = await this._supabase
       .from("rooms")
       .delete()
       .eq("id", roomId);
-    if (error)
-      throw new InvariantError("Gagal menghapus room: " + error.message);
+    if (error) throw new InvariantError("Gagal hapus room: " + error.message);
   }
 
   async removeParticipant(roomId, studentId, creatorId) {
     await this._assertRoomOwnedBy(roomId, creatorId);
-
     const { error } = await this._supabase
       .from("room_participants")
       .delete()
       .eq("room_id", roomId)
       .eq("student_id", studentId);
-
     if (error)
-      throw new InvariantError("Gagal menghapus peserta: " + error.message);
+      throw new InvariantError("Gagal hapus peserta: " + error.message);
   }
 
-  /* ============== PARTICIPATION (Siswa) ============== */
   async joinRoomByKeypass(studentId, keypass) {
-    const { data: room, error: rErr } = await this._supabase
+    const { data: room, error } = await this._supabase
       .from("rooms")
       .select("id, status")
       .eq("keypass", keypass)
       .maybeSingle();
-
-    if (rErr) throw new InvariantError("Gagal mencari room: " + rErr.message);
-    if (!room)
-      throw new NotFoundError("Room dengan keypass tersebut tidak ditemukan");
+    if (error || !room) throw new NotFoundError("Room tidak ditemukan");
     if (room.status !== "persiapan")
-      throw new InvariantError(
-        "Room tidak dalam status 'persiapan' — pendaftaran ditutup"
-      );
+      throw new InvariantError("Pendaftaran ditutup");
 
-    // upsert participant
     const { error: upErr } = await this._supabase
       .from("room_participants")
       .upsert([{ room_id: room.id, student_id: studentId }], {
         onConflict: "room_id,student_id",
         ignoreDuplicates: true,
       });
-    if (upErr)
-      throw new InvariantError("Gagal bergabung ke room: " + upErr.message);
-
+    if (upErr) throw new InvariantError("Gagal join: " + upErr.message);
     return { room_id: room.id };
   }
 
   async listParticipantsByRoomForStudent(roomId, studentId) {
-    // Pastikan room ada + ambil detailnya
-    const { data: room, error: rErr } = await this._supabase
-      .from("rooms")
-      .select(
-        "id, name, keypass, status, assessment_mechanism, question_count, created_at"
-      )
-      .eq("id", roomId)
-      .maybeSingle();
-
-    if (rErr) throw new InvariantError("Gagal memeriksa room: " + rErr.message);
-    if (!room) throw new NotFoundError("Room tidak ditemukan");
-
-    // Pastikan siswa benar-benar tergabung di room tsb
-    const { data: joined, error: jErr } = await this._supabase
+    const { data: joined } = await this._supabase
       .from("room_participants")
       .select("room_id")
       .eq("room_id", roomId)
       .eq("student_id", studentId)
       .maybeSingle();
+    if (!joined) throw new InvariantError("Anda bukan peserta room ini");
 
-    if (jErr)
-      throw new InvariantError("Gagal memeriksa partisipasi: " + jErr.message);
-    if (!joined) throw new InvariantError("Anda belum tergabung di room ini");
-
-    // Ambil daftar peserta di room
-    const { data: participants, error: pErr } = await this._supabase
+    const { data: room } = await this._supabase
+      .from("rooms")
+      .select("*")
+      .eq("id", roomId)
+      .single();
+    
+    const { data: participants } = await this._supabase
       .from("room_participants")
-      .select(
-        "student_id, join_timestamp, profiles:student_id(id, username, full_name, nomer_induk)"
-      )
+      .select("join_timestamp, profiles(id, username, full_name, nomer_induk)")
       .eq("room_id", roomId)
       .order("join_timestamp", { ascending: true });
 
-    if (pErr)
-      throw new InvariantError(
-        "Gagal mengambil daftar peserta: " + pErr.message
-      );
-
-    // Hitung total siswa
-    const total_participants = participants?.length ?? 0;
-
-    // Susun respons akhir
     return {
-      room: {
-        id: room.id,
-        name: room.name,
-        keypass: room.keypass,
-        status: room.status,
-        assessment_mechanism: room.assessment_mechanism,
-        question_count: room.question_count,
-        created_at: room.created_at,
-        total_participants,
-      },
+      room,
       participants: participants.map((p) => ({
-        id: p.profiles.id,
-        username: p.profiles.username,
-        full_name: p.profiles.full_name,
-        nomer_induk: p.profiles.nomer_induk,
+        ...p.profiles,
         join_timestamp: p.join_timestamp,
       })),
     };
@@ -266,89 +283,18 @@ export default class RoomService {
       .delete()
       .eq("room_id", roomId)
       .eq("student_id", studentId);
-
-    if (error)
-      throw new InvariantError("Gagal keluar dari room: " + error.message);
+    if (error) throw new InvariantError("Gagal keluar: " + error.message);
   }
 
   async listMyRooms(studentId) {
-    const { data, error } = await this._supabase
+    const { data } = await this._supabase
       .from("room_participants")
-      .select(
-        "room_id, join_timestamp, rooms:room_id(id, name, keypass, status, assessment_mechanism, question_count, created_at)"
-      )
+      .select("join_timestamp, rooms(*)")
       .eq("student_id", studentId)
       .order("join_timestamp", { ascending: false });
-
-    if (error)
-      throw new InvariantError(
-        "Gagal mengambil daftar room saya: " + error.message
-      );
-    // Flatten
-    return (data ?? []).map((d) => ({
+    return (data || []).map((d) => ({
       ...d.rooms,
       join_timestamp: d.join_timestamp,
     }));
-  }
-
-  /* ============== STATIC ROOM QUESTION SETUP ============== */
-  async generateStaticQuestions(roomId, creatorId) {
-    await this._assertRoomOwnedBy(roomId, creatorId);
-
-    const { data: room, error: rErr } = await this._supabase
-      .from("rooms")
-      .select("id, question_count, assessment_mechanism")
-      .eq("id", roomId)
-      .maybeSingle();
-    if (rErr)
-      throw new InvariantError("Gagal membaca data room: " + rErr.message);
-    if (!room) throw new NotFoundError("Room tidak ditemukan");
-    if (room.assessment_mechanism !== "static")
-      throw new InvariantError(
-        "Hanya room dengan mekanisme 'static' yang bisa diisi soal"
-      );
-
-    // hapus jika sebelumnya sudah ada set soal
-    const { error: delErr } = await this._supabase
-      .from("room_questions")
-      .delete()
-      .eq("room_id", roomId);
-    if (delErr)
-      throw new InvariantError(
-        "Gagal membersihkan soal lama: " + delErr.message
-      );
-
-    // ambil 1000 soal acak di sisi JS
-    const { data: pool, error: qErr } = await this._supabase
-      .from("questions")
-      .select("id")
-      .limit(1000);
-
-    if (qErr)
-      throw new InvariantError("Gagal mengambil soal acak: " + qErr.message);
-    if (!pool || pool.length === 0)
-      throw new InvariantError(
-        "Bank soal kosong, tidak bisa generate set static"
-      );
-
-    // acak manual
-    const shuffled = pool.sort(() => 0.5 - Math.random());
-    const questions = shuffled.slice(0, room.question_count);
-
-    // insert ke room_questions
-    const insertPayload = questions.map((q) => ({
-      room_id: room.id,
-      question_id: q.id,
-    }));
-
-    const { error: iErr } = await this._supabase
-      .from("room_questions")
-      .insert(insertPayload);
-    if (iErr)
-      throw new InvariantError(
-        "Gagal menyimpan set soal static: " + iErr.message
-      );
-
-    return { room_id: room.id, total_inserted: insertPayload.length };
   }
 }

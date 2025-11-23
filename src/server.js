@@ -2,6 +2,7 @@
 
 import Hapi from "@hapi/hapi";
 import dotenv from "dotenv";
+import Joi from "joi";
 import HapiAuthJwt2 from "hapi-auth-jwt2";
 import TokenManager from "./tokenize/TokenManager.js";
 import ClientError from "./exceptions/ClientError.js";
@@ -28,12 +29,20 @@ import ExamService from "./services/supabase/ExamService.js";
 import result from "./api/result-plugin/index.js";
 import ResultService from "./services/supabase/ResultService.js";
 
+// augment
+import augment from "./api/augment-plugin/index.js";
+import AugmentService from "./services/supabase/AugmentService.js";
+
+// analysis
+import analysis from "./api/analysis-plugin/index.js";
+import AnalysisService from "./services/supabase/AnalysisService.js";
+
 dotenv.config();
 
 export const init = async () => {
   const server = Hapi.server({
     port: process.env.PORT || 3000,
-    host: "0.0.0.0",
+    host: "localhost",
     routes: {
       cors: {
         origin: ["*"],
@@ -41,12 +50,16 @@ export const init = async () => {
     },
   });
 
+  server.validator(Joi);
+
   // inisiasi service plugins
   const authService = new AuthService();
   const questionService = new QuestionService();
   const roomService = new RoomService();
   const examService = new ExamService();
   const resultService = new ResultService();
+  const augmentService = new AugmentService();
+  const analysisService = new AnalysisService();
 
   await server.register(HapiAuthJwt2);
 
@@ -113,6 +126,25 @@ export const init = async () => {
     plugin: result,
     options: {
       service: resultService,
+      tokenManager: TokenManager,
+    },
+  });
+
+  // augment
+  await server.register({
+    plugin: augment,
+    options: {
+      service: augmentService,
+      tokenManager: TokenManager,
+    },
+  });
+
+  // analysis
+  await server.register({
+    plugin: analysis,
+    options: {
+      service: analysisService,
+      tokenManager: TokenManager,
       tokenManager: TokenManager,
     },
   });

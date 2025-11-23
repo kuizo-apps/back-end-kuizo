@@ -8,383 +8,598 @@ export default class ExamService {
       process.env.SUPABASE_URL,
       process.env.SUPABASE_SERVICE_KEY
     );
+
+    // Konfigurasi Rule Based (RB)
+    this.RB_CONFIG = {
+      lambda_val: 5,
+      prior: 50,
+      win_es: 5,
+      delta_thr: 2.0,
+      min_ratio: 0.5, // Min 50% soal harus dijawab
+      weights_cog: { C1: 1.0, C2: 1.1, C3: 1.2, C4: 1.3, C5: 1.4, C6: 1.5 },
+      weights_diff: { 1: 1.0, 2: 1.2, 3: 1.4 },
+      target_mastery: ["C1", "C2", "C3", "C4", "C5", "C6"],
+    };
   }
 
-  /* ========== Helpers ========== */
+  /* ================= HELPERS ================= */
 
   async _getRoom(room_id) {
     const { data, error } = await this._supabase
       .from("rooms")
-      .select("id, status, assessment_mechanism, question_count")
+      .select(
+        "id, status, assessment_mechanism, question_count, topic_config, subject_id, class_level"
+      )
       .eq("id", room_id)
       .maybeSingle();
-    if (error)
-      throw new InvariantError("Gagal mengambil room: " + error.message);
+    if (error) throw new InvariantError("Gagal ambil room: " + error.message);
     if (!data) throw new NotFoundError("Room tidak ditemukan");
     return data;
   }
 
-  async _ensureStudentInRoom(student_id, room_id) {
+  async _getParticipant(student_id, room_id) {
     const { data, error } = await this._supabase
       .from("room_participants")
-      .select("room_id")
+      .select("*")
       .eq("room_id", room_id)
       .eq("student_id", student_id)
       .maybeSingle();
-    if (error)
-      throw new InvariantError(
-        "Gagal memeriksa peserta room: " + error.message
-      );
+    if (error) throw new InvariantError("Error cek peserta: " + error.message);
     if (!data) throw new InvariantError("Anda belum tergabung dalam room ini");
+    return data;
   }
 
-  async _getAnsweredQuestionIds(student_id, room_id) {
-    const { data, error } = await this._supabase
-      .from("student_answers")
-      .select("question_id")
-      .eq("student_id", student_id)
-      .eq("room_id", room_id);
-    if (error)
-      throw new InvariantError(
-        "Gagal mengambil riwayat jawaban: " + error.message
-      );
-    return (data ?? []).map((d) => d.question_id);
-  }
-
-  async _getRandomQuestions(limit, excludeIds = []) {
-    const { data, error } = await this._supabase
+  async _getQuestionDetail(id, hideAnswer = true) {
+    const { data } = await this._supabase
       .from("questions")
       .select(
-        "id, topic_id, question_text, image_url, option_a, option_b, option_c, option_d, option_e, correct_answer, difficulty_level"
+        "id, question_text, image_url, image_caption, option_a, option_b, option_c, option_d, option_e, cognitive_level, difficulty_level, correct_answer"
       )
-      .limit(500);
-    if (error)
-      throw new InvariantError("Gagal mengambil soal acak: " + error.message);
+      .eq("id", id)
+      .maybeSingle();
 
-    const pool = (data ?? []).filter((q) => !excludeIds.includes(q.id));
-    if (pool.length === 0) return [];
+    if (!data) return null;
 
-    const shuffled = pool.sort(() => 0.5 - Math.random());
-    return shuffled.slice(0, limit);
+    if (hideAnswer) {
+      const { correct_answer, ...rest } = data;
+      return rest;
+    }
+    return data;
   }
 
-  async _getRandomQuestionByLevel(level, excludeIds = []) {
-    const { data, error } = await this._supabase
+  // Generate Map untuk Random (Persist di DB)
+  async _generateAndSaveRandomMap(student_id, room_id, room) {
+    // Query soal filter subject, class, topic
+    let query = this._supabase
       .from("questions")
-      .select(
-        "id, topic_id, question_text, image_url, option_a, option_b, option_c, option_d, option_e, correct_answer, difficulty_level"
-      )
-      .eq("difficulty_level", level)
-      .limit(500);
-    if (error)
-      throw new InvariantError(
-        "Gagal mengambil soal by level: " + error.message
-      );
-    const pool = (data ?? []).filter((q) => !excludeIds.includes(q.id));
-    if (pool.length === 0) return null;
-    return pool[Math.floor(Math.random() * pool.length)];
-  }
+      .select("id, topic_id, topics!inner(id, subject_id, class_level)");
 
-  async _getStaticRoomSet(room_id) {
-    const { data, error } = await this._supabase
-      .from("room_questions")
-      .select(
-        "question_id, questions:question_id(id, topic_id, question_text, image_url, option_a, option_b, option_c, option_d, option_e, correct_answer, difficulty_level)"
-      )
-      .eq("room_id", room_id);
-    if (error)
-      throw new InvariantError(
-        "Gagal mengambil set soal room (static): " + error.message
-      );
-    return (data ?? []).map((d) => d.questions);
-  }
+    query = query
+      .eq("topics.subject_id", room.subject_id)
+      .eq("topics.class_level", room.class_level);
 
-  _calcCorrect(correct_answer, student_answer) {
-    return (
-      String(correct_answer).toUpperCase().trim() ===
-      String(student_answer).toUpperCase().trim()
-    );
-  }
+    if (room.topic_config && room.topic_config.length > 0) {
+      query = query.in("topic_id", room.topic_config);
+    }
 
-  _weightsForVariableLength(question_count) {
-    const base = 100 / question_count;
-    const delta = base * 0.2;
-    const w1 = base;
-    const w2 = w1 + delta;
-    const w3 = w2 + delta;
-    return { w1, w2, w3 };
-  }
+    const { data } = await query;
+    // Ambil pool soal, acak, potong sesuai question_count
+    const shuffled = (data || [])
+      .sort(() => 0.5 - Math.random())
+      .slice(0, room.question_count);
+    const questionIds = shuffled.map((q) => q.id);
 
-  async _progressAdaptive(student_id, room_id) {
-    const { data, error } = await this._supabase
-      .from("student_answers")
-      .select("is_correct, question_level_at_attempt")
-      .eq("student_id", student_id)
+    // Simpan map ke DB
+    await this._supabase
+      .from("room_participants")
+      .update({ question_map: questionIds })
       .eq("room_id", room_id)
-      .order("answered_at", { ascending: true });
+      .eq("student_id", student_id);
 
-    if (error)
-      throw new InvariantError(
-        "Gagal membaca progres adaptif: " + error.message
-      );
+    return questionIds;
+  }
 
-    let level = 2;
-    let streakCorrect = 0;
-    let streakWrong = 0;
+  // Ambil Map Static
+  async _getStaticMap(room_id) {
+    const { data } = await this._supabase
+      .from("room_questions")
+      .select("question_id")
+      .eq("room_id", room_id);
+    return (data || []).map((d) => d.question_id);
+  }
 
-    for (const row of data ?? []) {
-      const correct = row.is_correct;
+  _getWeight(cog, diff) {
+    const wc = this.RB_CONFIG.weights_cog[cog] || 1.0;
+    const wd = this.RB_CONFIG.weights_diff[diff] || 1.0;
+    return wc * wd;
+  }
 
-      if (correct) {
-        streakCorrect++;
-        streakWrong = 0;
-        if (streakCorrect === 2 && level < 3) {
-          level++;
-          streakCorrect = 0;
-        }
-      } else {
-        streakWrong++;
-        streakCorrect = 0;
-        if (streakWrong === 2 && level > 1) {
-          level--;
-          streakWrong = 0;
+  _calculateES(answers) {
+    const { lambda_val, prior } = this.RB_CONFIG;
+    let true_w = 0;
+    let tot_w = 0;
+
+    answers.forEach((a) => {
+      const diff = a.question_level_at_attempt || 1;
+      const w = this._getWeight(a.cognitive_level, diff);
+      tot_w += w;
+      if (a.is_correct) true_w += w;
+    });
+
+    const es = (lambda_val * prior + 100 * true_w) / (lambda_val + tot_w);
+    return parseFloat(es.toFixed(2));
+  }
+
+  _determineNextLevel(currentCog, currentDiff, isCorrect) {
+    const cogs = ["C1", "C2", "C3", "C4", "C5", "C6"];
+    const cogIdx = cogs.indexOf(currentCog);
+
+    if (isCorrect) {
+      if (currentDiff < 3) return { cog: currentCog, diff: currentDiff + 1 };
+      if (cogIdx < 5) return { cog: cogs[cogIdx + 1], diff: 3 };
+      return { cog: "C6", diff: 3 };
+    } else {
+      if (currentDiff > 1) return { cog: currentCog, diff: currentDiff - 1 };
+      return { cog: currentCog, diff: 1 };
+    }
+  }
+
+  async _getRuleBasedNextQuestion(room, excludeIds, targetCog, targetDiff) {
+    let query = this._supabase
+      .from("questions")
+      .select("id, topics!inner(subject_id, class_level)")
+      .eq("topics.subject_id", room.subject_id)
+      .eq("topics.class_level", room.class_level)
+      .eq("cognitive_level", targetCog)
+      .eq("difficulty_level", targetDiff);
+
+    if (room.topic_config && room.topic_config.length > 0) {
+      query = query.in("topic_id", room.topic_config);
+    }
+
+    const { data } = await query.limit(300); // Ambil pool kandidat
+    if (!data || data.length === 0) return null;
+
+    const candidates = data.filter((q) => !excludeIds.includes(q.id));
+    if (candidates.length === 0) return null;
+
+    const randomIdx = Math.floor(Math.random() * candidates.length);
+    return candidates[randomIdx].id;
+  }
+
+  async _checkStopCondition(answers, max_items) {
+    const { win_es, delta_thr, min_ratio, target_mastery } = this.RB_CONFIG;
+    const n = answers.length;
+    const min_questions = Math.max(Math.floor(max_items * min_ratio), 1);
+
+    let shouldStop = false;
+    let stopReason = null;
+
+    if (n >= win_es) {
+      const lastN = answers.slice(-win_es).map((a) => a.es_value);
+      if (lastN.every((v) => v !== null && v !== undefined)) {
+        const maxVal = Math.max(...lastN);
+        const minVal = Math.min(...lastN);
+        if (maxVal - minVal <= delta_thr) {
+          shouldStop = true;
+          stopReason = "Score stable";
         }
       }
     }
 
-    return { current_level: level, streakCorrect, streakWrong };
-  }
-
-  async _computeScores(student_id, room, mech) {
-    const { data, error } = await this._supabase
-      .from("student_answers")
-      .select("is_correct, question_level_at_attempt, time_taken_seconds")
-      .eq("student_id", student_id)
-      .eq("room_id", room.id);
-    if (error)
-      throw new InvariantError(
-        "Gagal mengambil jawaban untuk skor: " + error.message
-      );
-
-    const totalCorrect = (data ?? []).filter((d) => d.is_correct).length;
-    const totalTime = (data ?? []).reduce(
-      (sum, d) => sum + (d.time_taken_seconds ?? 0),
-      0
+    const masteredLevels = new Set(
+      answers.filter((a) => a.is_correct).map((a) => a.cognitive_level)
     );
-    const avgTime = data?.length ? totalTime / data.length : 0;
 
-    if (mech === "adaptive_variable_length") {
-      const { w1, w2, w3 } = this._weightsForVariableLength(
-        room.question_count
-      );
-      const add = (lvl) => (lvl === 1 ? w1 : lvl === 2 ? w2 : w3);
+    const isAllMastered = target_mastery.every((target) =>
+      masteredLevels.has(target)
+    );
 
-      let expectation = 0;
-      let trueScore = 0;
-      for (const row of data ?? []) {
-        const lvl = row.question_level_at_attempt ?? 2;
-        const inc = add(lvl);
-        expectation += inc;
-        if (row.is_correct) trueScore += inc;
-      }
-
-      return {
-        total_questions_answered: data?.length ?? 0,
-        total_correct: totalCorrect,
-        expectation_score: expectation,
-        true_score: trueScore,
-        total_time_seconds: totalTime,
-        avg_time_per_question: avgTime,
-      };
+    if (isAllMastered) {
+      shouldStop = true;
+      stopReason = "All cognitive levels mastered";
     }
 
-    const trueScore =
-      room.question_count > 0 ? (totalCorrect / room.question_count) * 100 : 0;
+    if (n >= max_items) {
+      shouldStop = true;
+      stopReason = "Max items reached";
+    }
 
-    return {
-      total_questions_answered: data?.length ?? 0,
-      total_correct: totalCorrect,
-      expectation_score: null,
-      true_score: trueScore,
-      total_time_seconds: totalTime,
-      avg_time_per_question: avgTime,
-    };
+    if (n < min_questions) {
+      shouldStop = false;
+      stopReason = null;
+    }
+
+    return { stop: shouldStop, reason: stopReason };
   }
 
-  /* ========== Exam Flow ========== */
+  /* ================= FLOW START ================= */
 
   async startExam(student_id, { room_id }) {
     const room = await this._getRoom(room_id);
-    if (room.status !== "mulai_ujian")
-      throw new InvariantError("Room belum memulai ujian");
-    await this._ensureStudentInRoom(student_id, room_id);
+    if (room.status !== "berlangsung")
+      throw new InvariantError("Ujian belum dimulai/sudah selesai");
 
-    const answeredIds = await this._getAnsweredQuestionIds(student_id, room_id);
-    let nextQ = null;
+    const participant = await this._getParticipant(student_id, room_id);
 
-    if (room.assessment_mechanism === "static") {
-      const preset = await this._getStaticRoomSet(room_id);
-      const remaining = preset.filter((q) => !answeredIds.includes(q.id));
-      if (!remaining.length)
-        return { done: true, message: "Tidak ada soal tersisa" };
-      const shuffled = remaining.sort(() => Math.random() - 0.5);
-      nextQ = shuffled[0];
-      return { done: false, question: this._exposeQuestion(nextQ) };
-    } else if (room.assessment_mechanism === "random") {
-      const picks = await this._getRandomQuestions(1, answeredIds);
-      if (!picks.length)
-        return { done: true, message: "Tidak ada soal tersisa" };
-      nextQ = picks[0];
-    } else {
-      nextQ = await this._getRandomQuestionByLevel(2, answeredIds);
-      if (!nextQ)
-        return { done: true, message: "Tidak ada soal level 2 tersedia" };
+    // === A. STATIC & RANDOM (Map Based) ===
+    if (room.assessment_mechanism !== "rule_based") {
+      let map = participant.question_map;
+
+      // Generate map jika belum ada
+      if (!map || map.length === 0) {
+        if (room.assessment_mechanism === "random") {
+          map = await this._generateAndSaveRandomMap(student_id, room_id, room);
+        } else {
+          // Static: ambil dari tabel room_questions
+          map = await this._getStaticMap(room_id);
+          map = map.sort(() => Math.random() - 0.5);
+          await this._supabase
+            .from("room_participants")
+            .update({ question_map: map })
+            .eq("room_id", room_id)
+            .eq("student_id", student_id);
+        }
+      }
+
+      // Cek soal yg sudah dijawab
+      const { data: answers } = await this._supabase
+        .from("student_answers")
+        .select("question_id")
+        .eq("room_id", room_id)
+        .eq("student_id", student_id)
+        .not("student_answer", "is", null);
+
+      const answeredIds = (answers || []).map((a) => a.question_id);
+
+      // Cari index pertama yg belum dijawab (utk direct link)
+      const nextQId = map.find((id) => !answeredIds.includes(id));
+
+      if (!nextQId) return { done: true, message: "Semua soal telah dijawab." };
+
+      const questionData = await this._getQuestionDetail(nextQId);
+
+      return {
+        done: false,
+        mechanism: room.assessment_mechanism,
+        question_map: map, // Array ID Soal untuk navigasi FE
+        current_question: questionData,
+        answered_ids: answeredIds,
+      };
     }
 
-    return { done: false, question: this._exposeQuestion(nextQ) };
+    // === B. RULE BASED (Sequential) ===
+    else {
+      const { data: rawAnswers } = await this._supabase
+        .from("student_answers")
+        .select(
+          "question_id, is_correct, cognitive_level, question_level_at_attempt, es_value"
+        )
+        .eq("room_id", room_id)
+        .eq("student_id", student_id)
+        .order("answered_at", { ascending: true });
+
+      // Map DB column to Logic Key
+      const answers = (rawAnswers || []).map((a) => ({
+        ...a,
+        difficulty_level: a.question_level_at_attempt,
+      }));
+
+      // Cek Stop
+      const stopCheck = await this._checkStopCondition(
+        answers,
+        room.question_count
+      );
+      if (stopCheck.stop) return { done: true, message: "Ujian selesai." };
+
+      let nextQId = null;
+
+      if (answers.length === 0) {
+        nextQId = await this._getRuleBasedNextQuestion(room, [], "C1", 1);
+      } else {
+        const last = answers[answers.length - 1];
+        const excludeIds = answers.map((a) => a.question_id);
+        const nextParams = this._determineNextLevel(
+          last.cognitive_level,
+          last.difficulty_level,
+          last.is_correct
+        );
+        nextQId = await this._getRuleBasedNextQuestion(
+          room,
+          excludeIds,
+          nextParams.cog,
+          nextParams.diff
+        );
+
+        if (!nextQId) return { done: true, message: "Bank soal habis." };
+      }
+
+      const questionData = await this._getQuestionDetail(nextQId);
+      const is_last = answers.length + 1 >= room.question_count;
+
+      return {
+        done: false,
+        mechanism: "rule_based",
+        question_map: null, // Disable map navigation
+        current_question: questionData,
+        answered_count: answers.length,
+        is_last_question: is_last,
+      };
+    }
   }
 
-  _exposeQuestion(q) {
-    const { correct_answer, ...pub } = q;
-    return pub;
-  }
+  /* ================= FLOW ANSWER ================= */
 
   async answerAndNext(
     student_id,
     { room_id, question_id, answer, time_taken_seconds }
   ) {
     const room = await this._getRoom(room_id);
-    if (room.status !== "mulai_ujian")
-      throw new InvariantError("Room belum memulai ujian");
-    await this._ensureStudentInRoom(student_id, room_id);
+    if (room.status !== "berlangsung")
+      throw new InvariantError("Ujian tidak aktif");
 
-    const { data: q, error: qErr } = await this._supabase
-      .from("questions")
-      .select("id, correct_answer, difficulty_level")
-      .eq("id", question_id)
-      .maybeSingle();
-    if (qErr) throw new InvariantError("Gagal mengambil soal: " + qErr.message);
-    if (!q) throw new NotFoundError("Soal tidak ditemukan");
+    const qDb = await this._getQuestionDetail(question_id, false);
+    if (!qDb) throw new NotFoundError("Soal tidak valid");
 
-    const is_correct = this._calcCorrect(q.correct_answer, answer);
+    // 1. Determine Correctness
+    let is_correct = false;
+    if (answer && typeof answer === "string" && answer.trim() !== "") {
+      is_correct = qDb.correct_answer.toUpperCase() === answer.toUpperCase();
+    }
 
-    const insertRow = {
+    // 2. Payload Dasar
+    const payload = {
       student_id,
       room_id,
       question_id,
-      student_answer: answer,
+      student_answer: answer === "" ? null : answer,
       is_correct,
       time_taken_seconds,
-      question_level_at_attempt: q.difficulty_level,
-    };
-    const { error: insErr } = await this._supabase
-      .from("student_answers")
-      .insert(insertRow);
-    if (insErr)
-      throw new InvariantError("Gagal menyimpan jawaban: " + insErr.message);
-
-    const answeredIds = await this._getAnsweredQuestionIds(student_id, room_id);
-    const answeredCount = answeredIds.length;
-
-    // helper untuk finalize otomatis
-    const finalize = async () => {
-      const scores = await this._computeScores(
-        student_id,
-        room,
-        room.assessment_mechanism
-      );
-      await this.finish(student_id, { room_id });
-      return { done: true, scores };
+      cognitive_level: qDb.cognitive_level,
+      question_level_at_attempt: qDb.difficulty_level,
+      answered_at: new Date().toISOString(), // Penting untuk update timestamp terakhir
     };
 
-    /* ==== Mekanisme Static ==== */
-    if (room.assessment_mechanism === "static") {
-      const preset = await this._getStaticRoomSet(room_id);
-      const remaining = preset.filter((qq) => !answeredIds.includes(qq.id));
-      if (remaining.length === 0) return await finalize();
-      const shuffled = remaining.sort(() => Math.random() - 0.5);
-      return { done: false, question: this._exposeQuestion(shuffled[0]) };
-    }
+    // ==========================================
+    // A. LOGIKA RULE BASED (Sequential / Adaptive)
+    // ==========================================
+    if (room.assessment_mechanism === "rule_based") {
+      const { data: prevAnswers } = await this._supabase
+        .from("student_answers")
+        .select("is_correct, cognitive_level, question_level_at_attempt")
+        .eq("room_id", room_id)
+        .eq("student_id", student_id);
 
-    /* ==== Mekanisme Random ==== */
-    if (room.assessment_mechanism === "random") {
-      if (answeredCount >= room.question_count) return await finalize();
-      const picks = await this._getRandomQuestions(1, answeredIds);
-      if (!picks.length) return await finalize();
-      return { done: false, question: this._exposeQuestion(picks[0]) };
-    }
+      const historyForCalc = (prevAnswers || []).map((p) => ({
+        ...p,
+        difficulty_level: p.question_level_at_attempt,
+      }));
+      const currentForCalc = {
+        ...payload,
+        difficulty_level: payload.question_level_at_attempt,
+      };
 
-    /* ==== Mekanisme Adaptive Fixed Length ==== */
-    if (room.assessment_mechanism === "adaptive_fixed_length") {
-      const prog = await this._progressAdaptive(student_id, room_id);
-      const nextLevel = prog.current_level;
-      if (answeredCount >= room.question_count) return await finalize();
+      payload.es_value = this._calculateES([...historyForCalc, currentForCalc]);
 
-      const nextQ = await this._getRandomQuestionByLevel(
-        nextLevel,
-        answeredIds
+      // Rule Based umumnya insert sequential.
+      // Kita gunakan upsert jaga-jaga jika user double click, agar tidak error duplicate key.
+      const { error } = await this._supabase
+        .from("student_answers")
+        .upsert(payload, { onConflict: "room_id, student_id, question_id" });
+
+      if (error)
+        throw new InvariantError("Gagal simpan jawaban: " + error.message);
+
+      // Re-fetch updated history
+      const { data: updatedRaw } = await this._supabase
+        .from("student_answers")
+        .select(
+          "question_id, is_correct, cognitive_level, question_level_at_attempt, es_value"
+        )
+        .eq("room_id", room_id)
+        .eq("student_id", student_id)
+        .order("answered_at", { ascending: true });
+
+      const updatedHistory = updatedRaw.map((a) => ({
+        ...a,
+        difficulty_level: a.question_level_at_attempt,
+      }));
+
+      // Check Stop
+      const stopCheck = await this._checkStopCondition(
+        updatedHistory,
+        room.question_count
       );
-      if (!nextQ) return await finalize();
-      return { done: false, question: this._exposeQuestion(nextQ) };
-    }
+      if (stopCheck.stop) {
+        const result = await this.finish(student_id, { room_id });
+        return { done: true, result };
+      }
 
-    /* ==== Mekanisme Adaptive Variable Length ==== */
-    if (room.assessment_mechanism === "adaptive_variable_length") {
-      const scores = await this._computeScores(
-        student_id,
+      // Determine Next
+      const last = updatedHistory[updatedHistory.length - 1];
+      const excludeIds = updatedHistory.map((a) => a.question_id);
+      const nextParams = this._determineNextLevel(
+        last.cognitive_level,
+        last.difficulty_level,
+        last.is_correct
+      );
+
+      const nextQId = await this._getRuleBasedNextQuestion(
         room,
-        room.assessment_mechanism
+        excludeIds,
+        nextParams.cog,
+        nextParams.diff
       );
-      if ((scores.expectation_score ?? 0) >= 100) return await finalize();
+      if (!nextQId) return { done: true, message: "Soal habis" };
 
-      const prog = await this._progressAdaptive(student_id, room_id);
-      const nextQ = await this._getRandomQuestionByLevel(
-        prog.current_level,
-        answeredIds
-      );
-      if (!nextQ) return await finalize();
-      return { done: false, question: this._exposeQuestion(nextQ) };
+      const nextData = await this._getQuestionDetail(nextQId);
+      const is_last = updatedHistory.length + 1 >= room.question_count;
+
+      return {
+        done: false,
+        question: nextData,
+        is_last_question: is_last,
+        mechanism: "rule_based",
+      };
     }
 
-    throw new InvariantError("Mekanisme ujian tidak dikenali");
+    // ==========================================
+    // B. LOGIKA RANDOM & STATIC (Fleksibel / Navigasi Bebas)
+    // ==========================================
+    else {
+      // 1. UPSERT: Agar user bisa kembali ke soal sebelumnya dan mengubah jawaban.
+      // Sesuai dengan constraint: unique (room_id, student_id, question_id)
+      const { error } = await this._supabase
+        .from("student_answers")
+        .upsert(payload, { onConflict: "room_id, student_id, question_id" });
+
+      if (error)
+        throw new InvariantError("Gagal simpan jawaban: " + error.message);
+
+      // 2. Ambil Data Navigasi Terbaru (Map & Status Jawaban)
+      const participant = await this._getParticipant(student_id, room_id);
+      const map = participant.question_map || [];
+
+      // Ambil semua soal yang sudah dijawab untuk update warna di frontend
+      const { data: allAnswers } = await this._supabase
+        .from("student_answers")
+        .select("question_id")
+        .eq("room_id", room_id)
+        .eq("student_id", student_id)
+        .not("student_answer", "is", null);
+
+      const answeredIds = (allAnswers || []).map((a) => a.question_id);
+
+      // 3. Tentukan Soal Berikutnya (Sequential Map)
+      const currentIndex = map.indexOf(question_id);
+
+      // Default: Next question adalah index + 1
+      let nextData = null;
+      let nextIndex = currentIndex + 1;
+
+      // Jika masih ada soal berikutnya di map
+      if (nextIndex < map.length) {
+        const nextQId = map[nextIndex];
+        nextData = await this._getQuestionDetail(nextQId);
+      }
+
+      const is_last = nextIndex >= map.length;
+
+      return {
+        done: false,
+        mechanism: room.assessment_mechanism,
+        question: nextData, // Bisa null jika user menjawab soal terakhir
+
+        // Data Navigasi Lengkap untuk Frontend
+        current_index: nextIndex + 1, // Untuk display "Soal 2 dari 10"
+        total_questions: map.length,
+        is_last_question: is_last,
+
+        question_map: map, // Agar tombol navigasi tetap ada
+        answered_ids: answeredIds, // Agar tombol berubah warna (hijau)
+      };
+    }
   }
+
+  /* ================= NAVIGASI BEBAS (JUMP TO QUESTION) ================= */
+
+  async getSpecificQuestion(student_id, { room_id, question_id }) {
+    // 1. Validasi Room & Peserta
+    const room = await this._getRoom(room_id);
+    if (room.status !== "berlangsung") {
+      // Opsional: Bolehkan akses jika status 'berakhir' untuk review,
+      // tapi untuk ujian, biasanya harus 'berlangsung'.
+      // throw new InvariantError("Sesi ujian tidak aktif");
+    }
+
+    // Pastikan siswa adalah peserta room ini
+    await this._getParticipant(student_id, room_id);
+
+    // 2. Ambil Detail Soal
+    const questionData = await this._getQuestionDetail(question_id);
+    if (!questionData) throw new NotFoundError("Soal tidak ditemukan");
+
+    // 3. Ambil Jawaban Siswa Sebelumnya (Untuk Pre-fill UI)
+    const { data: prevAnswer } = await this._supabase
+      .from("student_answers")
+      .select("student_answer")
+      .eq("room_id", room_id)
+      .eq("student_id", student_id)
+      .eq("question_id", question_id)
+      .maybeSingle();
+
+    // 4. Gabungkan Data
+    return {
+      ...questionData,
+      student_answer: prevAnswer ? prevAnswer.student_answer : null,
+    };
+  }
+
+  /* ================= FINISH ================= */
 
   async finish(student_id, { room_id }) {
     const room = await this._getRoom(room_id);
-    await this._ensureStudentInRoom(student_id, room_id);
 
-    const scores = await this._computeScores(
-      student_id,
-      room,
-      room.assessment_mechanism
-    );
+    // Fetch semua jawaban untuk kalkulasi score & WAKTU
+    const { data: answers } = await this._supabase
+      .from("student_answers")
+      .select("*")
+      .eq("room_id", room_id)
+      .eq("student_id", student_id);
 
-    const { data, error: updateErr } = await this._supabase
+    const total_answered = answers ? answers.length : 0;
+    const total_correct = (answers || []).filter((a) => a.is_correct).length;
+
+    // Hitung Total Waktu
+    const total_time_seconds = (answers || []).reduce((acc, curr) => {
+      return acc + (curr.time_taken_seconds || 0);
+    }, 0);
+
+    let final_score = 0;
+
+    if (room.assessment_mechanism === "rule_based") {
+      let w_attempted = 0;
+      let w_correct = 0;
+      (answers || []).forEach((a) => {
+        const diff = a.question_level_at_attempt || 1;
+        const w = this._getWeight(a.cognitive_level, diff);
+        w_attempted += w;
+        if (a.is_correct) w_correct += w;
+      });
+      if (w_attempted > 0) final_score = (w_correct / w_attempted) * 100;
+    } else {
+      if (room.question_count > 0) {
+        final_score = (total_correct / room.question_count) * 100;
+      }
+    }
+
+    final_score = parseFloat(final_score.toFixed(2));
+
+    await this._supabase
       .from("room_participants")
       .update({
-        total_questions_answered: scores.total_questions_answered,
-        total_correct: scores.total_correct,
-        true_score: scores.true_score,
-        expectation_score: scores.expectation_score,
-        total_time_seconds: scores.total_time_seconds,
-        avg_time_per_question: scores.avg_time_per_question,
+        total_questions_answered: total_answered,
+        total_correct: total_correct,
+        true_score: final_score,
+        total_time_seconds: total_time_seconds,
         finished_at: new Date().toISOString(),
       })
       .eq("room_id", room_id)
-      .eq("student_id", student_id)
-      .select();  
+      .eq("student_id", student_id);
 
-    if (updateErr)
-      throw new InvariantError(
-        "Gagal menyimpan hasil ujian ke room_participants: " + updateErr.message
-      );
-
-    return scores;
+    return { score: final_score, correct: total_correct };
   }
 
   async result(student_id, room_id) {
-    const room = await this._getRoom(room_id);
-    await this._ensureStudentInRoom(student_id, room_id);
-    return this._computeScores(student_id, room, room.assessment_mechanism);
+    const { data } = await this._supabase
+      .from("room_participants")
+      .select(
+        "true_score, total_correct, total_questions_answered, finished_at"
+      )
+      .eq("room_id", room_id)
+      .eq("student_id", student_id)
+      .single();
+    if (!data) throw new NotFoundError("Data tidak ditemukan");
+    return data;
   }
 }

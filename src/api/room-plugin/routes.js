@@ -14,16 +14,6 @@ const routes = (handler) => [
     },
   },
   {
-    method: "POST",
-    path: "/rooms/{id}/generate-static",
-    handler: handler.generateStaticQuestionsHandler,
-    options: {
-      auth: { strategy: "jwt", scope: ["guru", "admin"] },
-      tags: ["api", "rooms"],
-      description: "Generate set soal random untuk room static",
-    },
-  },
-  {
     method: "GET",
     path: "/rooms",
     handler: handler.getMyRoomsHandler,
@@ -46,7 +36,7 @@ const routes = (handler) => [
   },
   {
     method: "PATCH",
-    path: "/rooms/{id}/status",
+    path: "/rooms-status/{id}",
     handler: handler.patchRoomStatusHandler,
     options: {
       auth: { strategy: "jwt", scope: ["guru", "admin"] },
@@ -79,7 +69,7 @@ const routes = (handler) => [
   // ====== SISWA ======
   {
     method: "POST",
-    path: "/rooms/join",
+    path: "/rooms-join",
     handler: handler.postJoinRoomHandler,
     options: {
       auth: { strategy: "jwt", scope: ["siswa"] },
@@ -90,7 +80,7 @@ const routes = (handler) => [
   },
   {
     method: "GET",
-    path: "/rooms/{room_id}/participants",
+    path: "/rooms-participants/{room_id}",
     handler: handler.getRoomParticipantsForStudentHandler,
     options: {
       auth: { strategy: "jwt", scope: ["siswa"] },
@@ -100,7 +90,7 @@ const routes = (handler) => [
   },
   {
     method: "DELETE",
-    path: "/rooms/leave/{room_id}",
+    path: "/rooms-leave/{room_id}",
     handler: handler.deleteLeaveRoomHandler,
     options: {
       auth: { strategy: "jwt", scope: ["siswa"] },
@@ -110,7 +100,7 @@ const routes = (handler) => [
   },
   {
     method: "GET",
-    path: "/rooms/my",
+    path: "/my-rooms",
     handler: handler.getStudentRoomsHandler,
     options: {
       auth: { strategy: "jwt", scope: ["siswa"] },

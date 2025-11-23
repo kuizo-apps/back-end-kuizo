@@ -4,19 +4,15 @@ export const RoomCreateSchema = Joi.object({
   name: Joi.string().min(3).max(120).required(),
   question_count: Joi.number().integer().min(1).max(200).required(),
   assessment_mechanism: Joi.string()
-    .valid(
-      "static",
-      "random",
-      "adaptive_fixed_length",
-      "adaptive_variable_length"
-    )
+    .valid("static", "random", "rule_based")
     .required(),
+  subject_id: Joi.number().integer().required(),
+  class_level: Joi.number().integer().min(10).max(12).required(),
+  topic_ids: Joi.array().items(Joi.number().integer()).allow(null).default([]),
 });
 
 export const RoomStatusSchema = Joi.object({
-  status: Joi.string()
-    .valid("persiapan", "mulai_ujian", "ujian_berakhir")
-    .required(),
+  status: Joi.string().valid("persiapan", "berlangsung", "berakhir").required(),
 });
 
 export const RoomJoinSchema = Joi.object({
@@ -25,5 +21,5 @@ export const RoomJoinSchema = Joi.object({
 
 export const RoomQuerySchema = Joi.object({
   q: Joi.string().allow("", null),
-  status: Joi.string().valid("persiapan", "mulai_ujian", "ujian_berakhir"),
+  status: Joi.string().valid("persiapan", "berlangsung", "berakhir"),
 });

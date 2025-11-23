@@ -5,6 +5,7 @@ export default class ExamHandler {
     this.startHandler = this.startHandler.bind(this);
     this.nextHandler = this.nextHandler.bind(this);
     this.finishHandler = this.finishHandler.bind(this);
+    this.getQuestionHandler = this.getQuestionHandler.bind(this);
     this.resultHandler = this.resultHandler.bind(this);
   }
 
@@ -20,6 +21,15 @@ export default class ExamHandler {
     return { status: "success", data };
   }
 
+  async getQuestionHandler(request) {
+    const { id: student_id } = request.auth.credentials;
+    const data = await this._service.getSpecificQuestion(
+      student_id,
+      request.payload
+    );
+    return { status: "success", data };
+  }
+
   async finishHandler(request) {
     const { id: student_id } = request.auth.credentials;
     const data = await this._service.finish(student_id, request.payload);
@@ -27,7 +37,7 @@ export default class ExamHandler {
   }
 
   async resultHandler(request) {
-    const { id: student_id, role } = request.auth.credentials;
+    const { id: student_id } = request.auth.credentials;
     const data = await this._service.result(
       student_id,
       Number(request.params.room_id)

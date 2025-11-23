@@ -1,84 +1,63 @@
+import InvariantError from "../../exceptions/InvariantError.js";
+import NotFoundError from "../../exceptions/NotFoundError.js";
+
 export default class ResultHandler {
   constructor(service) {
     this._service = service;
-    this.getStudentReportHandler = this.getStudentReportHandler.bind(this);
-    this.getRoomSummaryHandler = this.getRoomSummaryHandler.bind(this);
+
+    this.getTeacherOverviewHandler = this.getTeacherOverviewHandler.bind(this);
+    this.getTeacherQuestionAnalysisHandler =
+      this.getTeacherQuestionAnalysisHandler.bind(this);
+    this.getTeacherStudentListHandler =
+      this.getTeacherStudentListHandler.bind(this);
     this.getStudentDetailHandler = this.getStudentDetailHandler.bind(this);
   }
 
-  /** === Untuk siswa melihat hasil ujian sendiri === */
-  async getStudentReportHandler(request, h) {
-    try {
-      const { id: user_id } = request.auth.credentials;
-      const { room_id } = request.params;
-
-      const result = await this._service.getStudentReport(user_id, room_id);
-
-      return h.response({ status: "success", data: result });
-    } catch (error) {
-      return h
-        .response({
-          status: "error",
-          message: error.message || "Gagal mengambil laporan siswa",
-        })
-        .code(error.statusCode || 500);
-    }
+  async getTeacherOverviewHandler(request, h) {
+    const { room_id } = request.params;
+    const result = await this._service.getTeacherOverview(room_id);
+    return { status: "success", data: result };
   }
 
-  /** === Untuk guru: melihat rekap seluruh siswa dalam room === */
-  async getRoomSummaryHandler(request, h) {
-    try {
-      const { role } = request.auth.credentials;
-      const { room_id } = request.params;
-
-      if (role !== "guru" && role !== "admin") {
-        return h
-          .response({
-            status: "fail",
-            message: "Hanya guru atau admin yang dapat mengakses data ini.",
-          })
-          .code(403);
-      }
-
-      const result = await this._service.getRoomSummaryForTeacher(room_id);
-      return h.response({ status: "success", data: result });
-    } catch (error) {
-      return h
-        .response({
-          status: "error",
-          message: error.message || "Gagal mengambil rekap room",
-        })
-        .code(error.statusCode || 500);
-    }
+  async getTeacherQuestionAnalysisHandler(request, h) {
+    const { room_id } = request.params;
+    const result = await this._service.getTeacherQuestionAnalysis(room_id);
+    return { status: "success", data: result };
   }
 
-  /** === Untuk guru: melihat detail satu siswa dalam room === */
+  async getTeacherStudentListHandler(request, h) {
+    const { room_id } = request.params;
+    const result = await this._service.getTeacherStudentList(room_id);
+    return { status: "success", data: result };
+  }
+
   async getStudentDetailHandler(request, h) {
+    const { role, id: requester_id } = request.auth.credentials;
+    const { room_id, student_id } = request.params;
+
+    let targetStudentId = student_id;
+
+    if (role === "siswa") {
+      targetStudentId = requester_id;
+    }
+
+    if (!targetStudentId) {
+      throw new InvariantError(
+        "Parameter student_id diperlukan untuk role Guru/Admin"
+      );
+    }
+
     try {
-      const { role } = request.auth.credentials;
-      const { room_id, student_id } = request.params;
-
-      if (role !== "guru" && role !== "admin") {
-        return h
-          .response({
-            status: "fail",
-            message: "Hanya guru atau admin yang dapat mengakses data ini.",
-          })
-          .code(403);
-      }
-
-      const result = await this._service.getStudentDetailForTeacher(
-        student_id,
+      const result = await this._service.getStudentReport(
+        targetStudentId,
         room_id
       );
-      return h.response({ status: "success", data: result });
+      return { status: "success", data: result };
     } catch (error) {
-      return h
-        .response({
-          status: "error",
-          message: error.message || "Gagal mengambil detail siswa",
-        })
-        .code(error.statusCode || 500);
+      if (error instanceof NotFoundError) {
+        return h.response({ status: "fail", message: error.message }).code(404);
+      }
+      throw error;
     }
   }
 }

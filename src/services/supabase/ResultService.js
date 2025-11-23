@@ -10,202 +10,349 @@ export default class ResultService {
     );
   }
 
-  /** =====================================================================
-   * [A] Untuk siswa: laporan hasil ujian pribadi
-   * ===================================================================== */
   async getStudentReport(student_id, room_id) {
     return this._getSingleStudentReport(student_id, room_id);
   }
 
-  /** =====================================================================
-   * [B] Untuk guru/admin: rekap keseluruhan kelas dalam 1 room
-   * ===================================================================== */
-  async getRoomSummaryForTeacher(room_id) {
+  async getTeacherOverview(room_id) {
     const { data: participants, error: pErr } = await this._supabase
       .from("room_participants")
-      .select("student_id")
+      .select(
+        `
+        student_id, total_correct, total_questions_answered, 
+        true_score, total_time_seconds, finished_at,
+        profiles (full_name, nomer_induk)
+      `
+      )
+      .eq("room_id", room_id)
+      .order("true_score", { ascending: false });
+
+    if (pErr) throw new InvariantError("Gagal load overview: " + pErr.message);
+
+    const total_students = participants.length;
+    if (total_students === 0) throw new NotFoundError("Belum ada data siswa.");
+
+    let sumScore = 0,
+      sumTime = 0,
+      sumCorrect = 0,
+      sumRatio = 0;
+    participants.forEach((p) => {
+      sumScore += p.true_score || 0;
+      sumTime += p.total_time_seconds || 0;
+      sumCorrect += p.total_correct || 0;
+
+      const ratio =
+        p.total_questions_answered > 0
+          ? (p.total_correct / p.total_questions_answered) * 100
+          : 0;
+      sumRatio += ratio;
+    });
+
+    const summary = {
+      total_students,
+      avg_true_score: (sumScore / total_students).toFixed(2),
+      avg_time_seconds: (sumTime / total_students).toFixed(0),
+      avg_correct_count: (sumCorrect / total_students).toFixed(1),
+      avg_success_ratio: (sumRatio / total_students).toFixed(2),
+    };
+
+    const top_3_students = participants.slice(0, 3).map((p) => ({
+      nama: p.profiles.full_name,
+      nomer_induk: p.profiles.nomer_induk,
+      true_score: p.true_score,
+      success_ratio:
+        p.total_questions_answered > 0
+          ? ((p.total_correct / p.total_questions_answered) * 100).toFixed(1)
+          : 0,
+      avg_time_per_q:
+        p.total_questions_answered > 0
+          ? (p.total_time_seconds / p.total_questions_answered).toFixed(1)
+          : 0,
+    }));
+
+    const { data: allAnswers } = await this._supabase
+      .from("student_answers")
+      .select(
+        `
+        question_id, is_correct, cognitive_level, 
+        questions (question_text, difficulty_level, cognitive_level)
+      `
+      )
       .eq("room_id", room_id);
 
-    if (pErr)
-      throw new InvariantError("Gagal mengambil peserta: " + pErr.message);
-    if (!participants?.length)
-      throw new NotFoundError("Belum ada siswa di room ini.");
+    const cogStats = {
+      C1: { correct: 0, total: 0 },
+      C2: { correct: 0, total: 0 },
+      C3: { correct: 0, total: 0 },
+      C4: { correct: 0, total: 0 },
+      C5: { correct: 0, total: 0 },
+      C6: { correct: 0, total: 0 },
+    };
+    const questionStats = {};
 
-    // Ambil laporan setiap siswa
-    const reports = await Promise.all(
-      participants.map(async (p) => {
-        const r = await this._getSingleStudentReport(p.student_id, room_id);
-        return {
-          student_id: r.identity.student_id,
-          nama: r.identity.nama,
-          nomer_induk: r.identity.nomer_induk,
-          total_correct: r.summary.total_correct,
-          total_questions: r.summary.total_questions,
-          true_score: r.summary.true_score,
-          expectation_score: r.summary.expectation_score,
-          total_time_seconds: r.summary.total_time_seconds,
-          avg_time_per_question: r.summary.avg_time_per_question,
+    (allAnswers || []).forEach((a) => {
+      const cog = a.cognitive_level || a.questions?.cognitive_level || "C1";
+      if (cogStats[cog]) {
+        cogStats[cog].total++;
+        if (a.is_correct) cogStats[cog].correct++;
+      }
+
+      const qId = a.question_id;
+      if (!questionStats[qId]) {
+        questionStats[qId] = {
+          id: qId,
+          text: a.questions?.question_text,
+          cog: a.questions?.cognitive_level,
+          diff: a.questions?.difficulty_level,
+          total: 0,
+          correct: 0,
         };
+      }
+      questionStats[qId].total++;
+      if (a.is_correct) questionStats[qId].correct++;
+    });
+
+    const cognitive_breakdown = Object.entries(cogStats).map(
+      ([level, stat]) => ({
+        level,
+        total_attempts: stat.total,
+        success_ratio:
+          stat.total > 0 ? ((stat.correct / stat.total) * 100).toFixed(1) : 0,
       })
     );
 
-    // Hitung rata-rata keseluruhan kelas
-    const n = reports.length;
-    const avg = {
-      total_questions: (
-        reports.reduce((a, b) => a + (b.total_questions ?? 0), 0) / n
-      ).toFixed(2),
-      total_correct: (
-        reports.reduce((a, b) => a + (b.total_correct ?? 0), 0) / n
-      ).toFixed(2),
-      true_score: (
-        reports.reduce((a, b) => a + (b.true_score ?? 0), 0) / n
-      ).toFixed(2),
-      expectation_score: (
-        reports.reduce((a, b) => a + (b.expectation_score ?? 0), 0) / n
-      ).toFixed(2),
-      total_time_seconds: (
-        reports.reduce((a, b) => a + (b.total_time_seconds ?? 0), 0) / n
-      ).toFixed(2),
-      avg_time_per_question: (
-        reports.reduce((a, b) => a + (b.avg_time_per_question ?? 0), 0) / n
-      ).toFixed(2),
-    };
+    const qArray = Object.values(questionStats).map((q) => ({
+      ...q,
+      ratio: q.total > 0 ? (q.correct / q.total) * 100 : 0,
+    }));
+    qArray.sort((a, b) => b.ratio - a.ratio);
 
     return {
-      room_summary: avg,
-      participants: reports,
+      summary,
+      top_3_students,
+      cognitive_breakdown,
+      top_5_easiest: qArray.slice(0, 5),
+      top_5_hardest: qArray.slice(-5).reverse(),
     };
   }
 
-  /** =====================================================================
-   * [C] Untuk guru/admin: detail satu siswa di room
-   * ===================================================================== */
-  async getStudentDetailForTeacher(student_id, room_id) {
-    return this._getSingleStudentReport(student_id, room_id);
+  async getTeacherQuestionAnalysis(room_id) {
+    // 1. Ambil jawaban siswa di room ini
+    const { data: allAnswers, error } = await this._supabase
+      .from("student_answers")
+      .select(
+        `
+        question_id, is_correct, student_answer,
+        questions (
+            id, question_text, image_url, option_a, option_b, option_c, option_d, option_e, 
+            correct_answer, difficulty_level, cognitive_level, topics(name)
+        )
+      `
+      )
+      .eq("room_id", room_id);
+
+    if (error)
+      throw new InvariantError("Gagal load analisis soal: " + error.message);
+
+    const map = {};
+
+    // 2. Iterasi & Agregasi Data
+    (allAnswers || []).forEach((a) => {
+      const qId = a.question_id;
+
+      // Inisialisasi object soal jika belum ada di map
+      if (!map[qId]) {
+        const qData = a.questions;
+        map[qId] = {
+          question_id: qId,
+          text_preview: qData.question_text,
+          // Tambahkan detail lain yg berguna untuk FE
+          image_url: qData.image_url,
+          options: {
+            A: qData.option_a,
+            B: qData.option_b,
+            C: qData.option_c,
+            D: qData.option_d,
+            E: qData.option_e,
+          },
+          correct_answer: qData.correct_answer,
+          topic: qData.topics?.name,
+          master_diff: qData.difficulty_level,
+          master_cog: qData.cognitive_level,
+
+          // Statistik Room
+          stats_attempts: 0, // Total yg jawab soal ini di room ini
+          stats_correct: 0, // Total yg jawab BENAR
+
+          // Distribusi Jawaban (Ini yg diminta)
+          distribution: {
+            A: 0,
+            B: 0,
+            C: 0,
+            D: 0,
+            E: 0,
+          },
+        };
+      }
+
+      // Update Statistik
+      map[qId].stats_attempts++;
+      if (a.is_correct) map[qId].stats_correct++;
+
+      // Hitung Distribusi Pilihan Siswa
+      if (a.student_answer) {
+        const ansKey = a.student_answer.toUpperCase();
+        if (map[qId].distribution[ansKey] !== undefined) {
+          map[qId].distribution[ansKey]++;
+        }
+      }
+    });
+
+    // 3. Konversi Map ke Array & Hitung Rasio
+    const list = Object.values(map).map((item) => ({
+      ...item,
+      success_ratio:
+        item.stats_attempts > 0
+          ? (item.stats_correct / item.stats_attempts).toFixed(2) // Float 0.00 - 1.00
+          : 0,
+    }));
+
+    // Sort dari soal dengan rasio keberhasilan TERENDAH (Paling sulit)
+    list.sort(
+      (a, b) => parseFloat(a.success_ratio) - parseFloat(b.success_ratio)
+    );
+
+    return list;
   }
 
-  /** =====================================================================
-   * [PRIVATE] Fungsi mengambil laporan lengkap satu siswa
-   * ===================================================================== */
+  async getTeacherStudentList(room_id) {
+    const { data, error } = await this._supabase
+      .from("room_participants")
+      .select(
+        `
+        student_id, total_questions_answered, total_correct, true_score, 
+        total_time_seconds, finished_at,
+        profiles (full_name, nomer_induk, username)
+      `
+      )
+      .eq("room_id", room_id);
+
+    if (error) throw new InvariantError("Gagal load siswa: " + error.message);
+
+    const result = data.map((p) => {
+      const answered = p.total_questions_answered || 0;
+      const time = p.total_time_seconds || 0;
+      return {
+        student_id: p.student_id,
+        nama: p.profiles.full_name,
+        nomer_induk: p.profiles.nomer_induk,
+        true_score: p.true_score,
+        stats: {
+          answered,
+          correct: p.total_correct,
+          success_ratio:
+            answered > 0 ? ((p.total_correct / answered) * 100).toFixed(1) : 0,
+          avg_time_seconds: answered > 0 ? (time / answered).toFixed(1) : 0,
+        },
+        status: p.finished_at ? "Selesai" : "Belum Selesai",
+      };
+    });
+
+    result.sort((a, b) => a.nama.localeCompare(b.nama));
+    return result;
+  }
+
   async _getSingleStudentReport(student_id, room_id) {
     const { data: participant, error: pErr } = await this._supabase
       .from("room_participants")
       .select(
-        `
-        total_questions_answered,
-        total_correct,
-        true_score,
-        expectation_score,
-        total_time_seconds,
-        avg_time_per_question,
-        finished_at,
-        rooms (name, assessment_mechanism),
-        profiles (username, full_name, nomer_induk, email)
-      `
+        `*, rooms(name, assessment_mechanism, question_count), profiles(full_name, nomer_induk, username, email)`
       )
       .eq("room_id", room_id)
       .eq("student_id", student_id)
       .maybeSingle();
 
-    if (pErr)
-      throw new InvariantError("Gagal mengambil data peserta: " + pErr.message);
-    if (!participant)
-      throw new NotFoundError("Siswa tidak mengikuti ujian ini.");
+    if (pErr || !participant)
+      throw new NotFoundError("Data siswa tidak ditemukan.");
 
-    // Ambil riwayat jawaban siswa
     const { data: answers, error: aErr } = await this._supabase
       .from("student_answers")
       .select(
         `
-        id, student_answer, is_correct, time_taken_seconds, question_level_at_attempt,
-        questions (
-          question_text,
-          option_a, option_b, option_c, option_d, option_e,
-          correct_answer, difficulty_level,
-          topics (name)
-        )
+        student_answer, is_correct, time_taken_seconds, 
+        question_level_at_attempt, cognitive_level, answered_at,
+        questions (question_text, option_a, option_b, option_c, option_d, option_e, correct_answer, topics(name))
       `
       )
-      .eq("student_id", student_id)
       .eq("room_id", room_id)
+      .eq("student_id", student_id)
       .order("answered_at", { ascending: true });
 
-    if (aErr)
-      throw new InvariantError(
-        "Gagal mengambil riwayat jawaban: " + aErr.message
-      );
+    if (aErr) throw new InvariantError("Gagal load jawaban: " + aErr.message);
 
-    // Soal terlama (3 soal)
-    const longest = [...(answers ?? [])]
-      .sort((a, b) => b.time_taken_seconds - a.time_taken_seconds)
-      .slice(0, 3)
-      .map((a) => ({
-        question: a.questions.question_text,
-        topic: a.questions.topics?.name,
-        level: a.question_level_at_attempt,
-        correct: a.is_correct,
+    const cogStats = {};
+    (answers || []).forEach((a) => {
+      const cog = a.cognitive_level || "C1";
+      if (!cogStats[cog]) cogStats[cog] = { total: 0, correct: 0 };
+      cogStats[cog].total++;
+      if (a.is_correct) cogStats[cog].correct++;
+    });
+
+    const cognitive_performance = Object.entries(cogStats)
+      .map(([level, stat]) => ({
+        level,
+        total: stat.total,
+        success_ratio:
+          stat.total > 0 ? ((stat.correct / stat.total) * 100).toFixed(1) : 0,
+      }))
+      .sort((a, b) => a.level.localeCompare(b.level));
+
+    const question_history = (answers || []).map((a, idx) => ({
+      no: idx + 1,
+      text: a.questions.question_text,
+      options: {
+        A: a.questions.option_a,
+        B: a.questions.option_b,
+        C: a.questions.option_c,
+        D: a.questions.option_d,
+        E: a.questions.option_e,
+      },
+      correct_answer: a.questions.correct_answer,
+      student_answer: a.student_answer,
+      is_correct: a.is_correct,
+      topic: a.questions.topics?.name,
+      meta: {
+        difficulty: a.question_level_at_attempt,
+        cognitive: a.cognitive_level,
         time: a.time_taken_seconds,
-      }));
-
-    // Rekap per level soal
-    const levelSummary = {};
-    for (const a of answers ?? []) {
-      const lvl = a.question_level_at_attempt;
-      if (!levelSummary[lvl]) levelSummary[lvl] = { total: 0, correct: 0 };
-      levelSummary[lvl].total++;
-      if (a.is_correct) levelSummary[lvl].correct++;
-    }
-
-    const levelStats = Object.entries(levelSummary).map(([lvl, s]) => ({
-      level: Number(lvl),
-      total: s.total,
-      correct: s.correct,
-      percent: ((s.correct / s.total) * 100).toFixed(2),
+      },
     }));
 
     return {
-      summary: {
-        total_questions: participant.total_questions_answered,
-        total_correct: participant.total_correct,
-        true_score: participant.true_score,
-        expectation_score: participant.expectation_score,
-        total_time_seconds: participant.total_time_seconds,
-        avg_time_per_question: participant.avg_time_per_question,
-        finished_at: participant.finished_at,
-      },
       identity: {
-        student_id,
-        nama: participant.profiles?.full_name ?? "(Tanpa Nama)",
-        username: participant.profiles?.username,
-        nomer_induk: participant.profiles?.nomer_induk,
-        email: participant.profiles?.email,
+        nama: participant.profiles.full_name,
+        nomer_induk: participant.profiles.nomer_induk,
+        username: participant.profiles.username,
       },
-      room_info: {
-        room_id,
-        room_name: participant.rooms?.name ?? "Tanpa Nama Room",
-        assessment_mechanism:
-          participant.rooms?.assessment_mechanism ?? "Tidak Diketahui",
+      summary: {
+        true_score: participant.true_score,
+        correct_count: participant.total_correct,
+        answered_count: participant.total_questions_answered,
+        room_total_questions: participant.rooms.question_count,
+        avg_time:
+          participant.total_questions_answered > 0
+            ? (
+                participant.total_time_seconds /
+                participant.total_questions_answered
+              ).toFixed(1)
+            : 0,
       },
-      history: (answers ?? []).map((a) => ({
-        question: a.questions.question_text,
-        topic: a.questions.topics?.name,
-        options: {
-          A: a.questions.option_a,
-          B: a.questions.option_b,
-          C: a.questions.option_c,
-          D: a.questions.option_d,
-          E: a.questions.option_e,
-        },
-        correct_answer: a.questions.correct_answer,
-        student_answer: a.student_answer,
-        is_correct: a.is_correct,
-        difficulty_level: a.questions.difficulty_level,
-        level_at_attempt: a.question_level_at_attempt,
-        time_taken_seconds: a.time_taken_seconds,
-      })),
-      top_slowest: longest,
-      level_performance: levelStats,
+      cognitive_performance,
+      question_history,
     };
+  }
+
+  async getStudentDetailForTeacher(student_id, room_id) {
+    return this._getSingleStudentReport(student_id, room_id);
   }
 }

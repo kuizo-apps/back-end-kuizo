@@ -3,7 +3,7 @@ import * as ExamSchemas from "../../validator/exam-schema.js";
 const routes = (handler) => [
   {
     method: "POST",
-    path: "/exam/start",
+    path: "/exam-start",
     handler: handler.startHandler,
     options: {
       auth: { strategy: "jwt", scope: ["siswa"] },
@@ -14,7 +14,7 @@ const routes = (handler) => [
   },
   {
     method: "POST",
-    path: "/exam/next",
+    path: "/exam-next",
     handler: handler.nextHandler,
     options: {
       auth: { strategy: "jwt", scope: ["siswa"] },
@@ -25,7 +25,18 @@ const routes = (handler) => [
   },
   {
     method: "POST",
-    path: "/exam/finish",
+    path: "/exam-question",
+    handler: handler.getQuestionHandler,
+    options: {
+      auth: { strategy: "jwt", scope: ["siswa"] },
+      tags: ["api", "exam"],
+      description: "Ambil detail soal tertentu (untuk navigasi klik)",
+      validate: { payload: ExamSchemas.GetSpecificQuestionSchema },
+    },
+  },
+  {
+    method: "POST",
+    path: "/exam-finish",
     handler: handler.finishHandler,
     options: {
       auth: { strategy: "jwt", scope: ["siswa"] },
@@ -36,7 +47,7 @@ const routes = (handler) => [
   },
   {
     method: "GET",
-    path: "/exam/result/{room_id}",
+    path: "/exam-result/{room_id}",
     handler: handler.resultHandler,
     options: {
       auth: { strategy: "jwt", scope: ["siswa"] },

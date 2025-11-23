@@ -18,7 +18,7 @@ export default class AuthService {
   async _getProfile(userId) {
     const { data: profile, error } = await this._supabaseAdmin
       .from("profiles")
-      .select("id, role")
+      .select("id, role, class_student")
       .eq("id", userId)
       .maybeSingle();
 
@@ -67,13 +67,20 @@ export default class AuthService {
     nomer_induk,
     password,
     role,
+    class_student,
   }) {
+    const finalClass = role === "siswa" ? class_student : null;
     const { data: user, error: signUpError } =
       await this._supabase.auth.admin.createUser({
         email,
         password,
         email_confirm: true,
-        user_metadata: { username, full_name, nomer_induk },
+        user_metadata: {
+          username,
+          full_name,
+          nomer_induk,
+          class_student: finalClass,
+        },
       });
 
     if (signUpError) throw new InvariantError(signUpError.message);
@@ -84,7 +91,12 @@ export default class AuthService {
       .eq("id", user.user.id);
 
     if (insertError) throw new InvariantError(insertError.message);
-    return { id: user.user.id, email: user.user.email, role };
+    return {
+      id: user.user.id,
+      email: user.user.email,
+      role,
+      class_student: finalClass,
+    };
   }
 
   // === Login ===

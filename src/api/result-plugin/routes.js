@@ -1,34 +1,45 @@
 const routes = (handler) => [
   {
     method: "GET",
-    path: "/student-reports/{room_id}",
-    handler: handler.getStudentReportHandler,
-    options: {
-      auth: { strategy: "jwt", scope: ["siswa"] },
-      tags: ["api", "student-reports"],
-      description: "Menampilkan laporan hasil ujian untuk siswa (individu)",
-    },
-  },
-  {
-    method: "GET",
-    path: "/teacher-reports/{room_id}",
-    handler: handler.getRoomSummaryHandler,
+    path: "/report-overview/{room_id}",
+    handler: handler.getTeacherOverviewHandler,
     options: {
       auth: { strategy: "jwt", scope: ["guru", "admin"] },
-      tags: ["api", "teacher-reports"],
-      description:
-        "Menampilkan rekap performa seluruh siswa dalam room (guru/admin)",
+      tags: ["api", "report"],
+      description: "Tab 1: Overview Class Performance, Top 3, Cog Analysis",
     },
   },
+
   {
     method: "GET",
-    path: "/teacher-reports/{room_id}/{student_id}",
+    path: "/report-questions/{room_id}",
+    handler: handler.getTeacherQuestionAnalysisHandler,
+    options: {
+      auth: { strategy: "jwt", scope: ["guru", "admin"] },
+      tags: ["api", "report"],
+      description: "Tab 2: List Analisis Semua Soal di Room",
+    },
+  },
+
+  {
+    method: "GET",
+    path: "/report-students/{room_id}",
+    handler: handler.getTeacherStudentListHandler,
+    options: {
+      auth: { strategy: "jwt", scope: ["guru", "admin"] },
+      tags: ["api", "report"],
+      description: "Tab 3: List Semua Siswa (Abjad)",
+    },
+  },
+
+  {
+    method: "GET",
+    path: "/report-detail/{room_id}/{student_id?}",
     handler: handler.getStudentDetailHandler,
     options: {
-      auth: { strategy: "jwt", scope: ["guru", "admin"] },
-      tags: ["api", "teacher-reports"],
-      description:
-        "Menampilkan detail performa satu siswa dalam room (guru/admin)",
+      auth: { strategy: "jwt", scope: ["guru", "admin", "siswa"] },
+      tags: ["api", "report"],
+      description: "Detail report satu siswa lengkap dengan history soal",
     },
   },
 ];
