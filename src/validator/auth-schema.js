@@ -15,8 +15,12 @@ export const RegisterUserSchema = Joi.object({
   nomer_induk: Joi.string().required(),
   password: Joi.string().required(),
   role: Joi.string().valid("guru", "siswa").required(),
-  class_student: Joi.string().allow(null, ""),
-}).unknown(true);
+  class_student: Joi.when("role", {
+    is: "siswa",
+    then: Joi.string().max(8).required(), // HARUS ada untuk siswa
+    otherwise: Joi.valid(null).optional(), // otomatis null untuk guru
+  }),
+}).unknown(false);
 
 export const LoginSchema = Joi.object({
   email: Joi.string().email().required(),
