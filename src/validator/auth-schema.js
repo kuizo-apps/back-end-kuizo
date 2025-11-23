@@ -17,8 +17,8 @@ export const RegisterUserSchema = Joi.object({
   role: Joi.string().valid("guru", "siswa").required(),
   class_student: Joi.when("role", {
     is: "siswa",
-    then: Joi.string().max(8).required(), // HARUS ada untuk siswa
-    otherwise: Joi.valid(null).optional(), // otomatis null untuk guru
+    then: Joi.string().required(),
+    otherwise: Joi.valid(null).optional(), 
   }),
 }).unknown(false);
 
